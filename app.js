@@ -22,9 +22,11 @@ const locName = k => (LOCS.find(l => l.key === k) || {}).name || (k === "Q" ? "�
 const S = {
   catalogs: [], month: null, cat: null, items: [], byRow: new Map(),
   server: [], entries: [], loaded: false, online: null, syncedAt: null, sig: "",
-  loc: "I", tab: "input", q: "", grp: "", filt: "all", lq: "", lloc: "", showDel: false,
-  me: "", code: "", outbox: [], sending: false,
+  loc: "I", tab: "input", q: "", grp: "", filt: "all", lq: "", showDel: false,
+  allView: "items", iq: "", allFilt: "done", aq: "", lloc: "", showDelA: false,
+  locks: {}, me: "", code: "", outbox: [], rejected: [], sending: false,
 };
+const isLocked = loc => !!S.locks[loc];
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const fmt = n => (Math.round(n * 10) / 10).toLocaleString("ko-KR");
@@ -111,6 +113,7 @@ async function setMonth(m) {
   const c = catalogFor(m);
   if (S.cat?.month !== c.month) await loadCatalog(c);
   S.server = store.get("rm-cache-" + m, []);
+  S.locks = store.get("rm-locks-" + m, {});
   S.loaded = S.server.length > 0; S.sig = "";
   merge(); renderAll();
   refresh();
@@ -161,7 +164,7 @@ function merge() {
 /* 데이터가 바뀌었을 때만 다시 그린다 (주기적으로 새로 받아도 화면이 깜빡이지 않게) */
 function mergeAndRender(force) {
   merge();
-  const sig = JSON.stringify(S.entries);
+  const sig = JSON.stringify([S.entries, S.locks]);
   if (force || sig !== S.sig) { S.sig = sig; renderAll() } else { renderBanners(); renderSync() }
 }
 
@@ -173,14 +176,17 @@ async function refresh() {
     if (j.ok === false && j.error === "code") { openSetup("현장 코드가 맞지 않습니다. 다시 입력해 주세요."); return }
     if (month !== S.month) return;
     S.server = j.entries || [];
+    S.locks = j.locks || {};
     store.set("rm-cache-" + month, S.server);
+    store.set("rm-locks-" + month, S.locks);
     S.online = true; S.syncedAt = new Date(); S.loaded = true;
   } catch { S.online = false; S.loaded = true }
   mergeAndRender();
 }
 
 S.outbox = store.get("rm-outbox", []);
-function saveOutbox() { store.set("rm-outbox", S.outbox) }
+S.rejected = store.get("rm-rejected", []);
+function saveOutbox() { store.set("rm-outbox", S.outbox); store.set("rm-rejected", S.rejected) }
 function enqueue(op) {
   op.q = newId();
   S.outbox.push(op); saveOutbox();
@@ -201,7 +207,10 @@ async function flush() {
           : await apiPost({ action: "del", id: op.id, by: op.by });
       } catch { failed = true; break }  // 통신 실패: 대기열에 그대로 두고 다음에 다시 보낸다
       if (j.ok === false && j.error === "code") { failed = true; openSetup("현장 코드가 바뀌었습니다. 새 코드를 입력해 주세요."); break }
-      if (j.ok === false) toast(`한 건을 저장하지 못했습니다 (${j.error}). 입력 내역을 확인해 주세요.`);
+      // 보내는 사이 다른 사람이 구역을 잠갔으면 버리지 않고 따로 보관한다 (잠금 해제 후 다시 보내기)
+      if (j.ok === false && j.error === "locked") { S.rejected.push(op); toast("잠긴 구역이라 저장하지 못한 입력이 있습니다") }
+      else if (j.ok === false && j.error === "owner") toast("다른 사람이 입력한 기록은 수정·삭제할 수 없습니다");
+      else if (j.ok === false) toast(`한 건을 저장하지 못했습니다 (${j.error}). 입력 내역을 확인해 주세요.`);
       S.outbox.shift(); saveOutbox(); sent++;
     }
   } finally { S.sending = false }
@@ -222,6 +231,59 @@ function deleteEntry(e) {
   enqueue({ op: "del", id: e.id, by: S.me, at: new Date().toISOString() });
   toast("삭제했습니다 (기록은 남습니다)");
 }
+
+/* ---------- 구역 잠금 ---------- */
+/* 잠금·해제는 대기열에 두지 않고 바로 보낸다 (통신이 될 때만) */
+let dlg = null;
+function openDlg(kind, loc) { dlg = { kind, loc, err: "", busy: false }; drawDlg() }
+function closeDlg() { dlg = null; $("dlgRoot").innerHTML = "" }
+function drawDlg() {
+  if (!dlg) return;
+  const name = locName(dlg.loc);
+  const n = active().filter(e => e.loc === dlg.loc).length;
+  const body = dlg.kind === "lock"
+    ? `<h2>${esc(name)} 입력을 마칠까요?</h2>
+       <p>잠그면 ${esc(S.month ? monthLabel(S.month) : "")} ${esc(name)}에는 누구도 입력·수정·삭제할 수 없습니다. 지금까지 입력 ${n}건은 그대로 남습니다.</p>
+       <p>다시 고치려면 잠금 해제 코드가 필요합니다.</p>`
+    : `<h2>${esc(name)} 잠금 해제</h2>
+       <p>잠금 해제 코드를 넣으면 다시 입력·수정·삭제할 수 있습니다.</p>
+       <input id="unlockCode" type="password" inputmode="numeric" maxlength="12" placeholder="잠금 해제 코드" autocomplete="off">`;
+  $("dlgRoot").innerHTML = `
+    <div class="scrim" data-dlg="close"></div>
+    <div class="dlg" role="dialog" aria-modal="true">
+      ${body}
+      <div class="err">${esc(dlg.err)}</div>
+      <div class="dlg-btns"><button class="btn ghost" data-dlg="close">취소</button>
+        <button class="btn" data-dlg="ok" ${dlg.busy ? "disabled" : ""}>${dlg.busy ? "처리 중…" : dlg.kind === "lock" ? "잠그기" : "잠금 해제"}</button></div>
+    </div>`;
+  $("unlockCode")?.focus();
+}
+async function submitDlg() {
+  if (!dlg || dlg.busy) return;
+  const unlock = ($("unlockCode")?.value || "").trim();
+  if (dlg.kind === "unlock" && !unlock) { dlg.err = "코드를 넣어 주세요."; drawDlg(); return }
+  if (S.outbox.length) { dlg.err = "아직 보내지 못한 입력이 있습니다. 먼저 보낸 뒤 다시 해 주세요."; drawDlg(); flush(); return }
+  dlg.busy = true; dlg.err = ""; drawDlg();
+  const { kind, loc } = dlg;
+  let j;
+  try { j = await apiPost({ action: kind, month: S.month, loc, by: S.me, unlock }) }
+  catch { if (dlg) { dlg.busy = false; dlg.err = "통신이 안 됩니다. 연결된 곳에서 다시 해 주세요."; drawDlg() } return }
+  if (!dlg) return;
+  dlg.busy = false;
+  if (j.ok === false) {
+    dlg.err = { unlock: "잠금 해제 코드가 맞지 않습니다.", nounlock: "잠금 해제 코드가 아직 설정되지 않았습니다. 담당자에게 문의해 주세요.",
+      action: "저장소가 아직 새 버전이 아닙니다. 담당자에게 문의해 주세요." }[j.error] || `처리하지 못했습니다 (${j.error}).`;
+    drawDlg(); return
+  }
+  S.locks = j.locks || S.locks;
+  store.set("rm-locks-" + S.month, S.locks);
+  closeDlg();
+  toast(kind === "lock" ? `${locName(loc)}을(를) 잠갔습니다` : `${locName(loc)} 잠금을 풀었습니다`);
+  mergeAndRender(true);
+  if (kind === "unlock" && S.rejected.some(op => opLoc(op) === loc)) toast("잠금 전에 저장하지 못한 입력이 있습니다. 위 안내에서 다시 보내기를 눌러 주세요.");
+  refresh();
+}
+const opLoc = op => op.op === "add" ? op.entry.loc : (S.entries.find(e => e.id === op.id) || {}).loc;
 
 /* ---------- 처음 설정 ---------- */
 function openSetup(msg) {
@@ -260,25 +322,46 @@ function renderSync() {
   el.textContent = t ? `동기화 ${String(t.getHours()).padStart(2, "0")}:${String(t.getMinutes()).padStart(2, "0")}` : "연결 중";
   el.className = "sync";
 }
+const LOCK_SVG = `<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="7" width="10" height="7.5" rx="1.5" fill="currentColor"/><path d="M5.2 7V5a2.8 2.8 0 0 1 5.6 0v2" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>`;
 function renderLocBar() {
   const { byLocCount } = tallies();
+  $("locBar").hidden = S.tab === "all";  // 전체 탭은 구역과 상관없이 모두 보여준다
   $("locBar").innerHTML = LOCS.map(l =>
-    `<button class="loc" data-loc="${l.key}" aria-pressed="${S.loc === l.key}">${l.name}<small>${byLocCount[l.key] || 0}</small></button>`).join("");
+    `<button class="loc${isLocked(l.key) ? " locked" : ""}" data-loc="${l.key}" aria-pressed="${S.loc === l.key}">${isLocked(l.key) ? LOCK_SVG : ""}${l.name}<small>${byLocCount[l.key] || 0}</small></button>`).join("");
 }
 function renderBanners() {
   const b = [];
   if (!API) b.push(`<div class="banner warn"><span>저장소 주소가 설정되지 않았습니다. 지금 입력은 이 폰에만 보관됩니다.</span></div>`);
   else if (S.outbox.length) b.push(`<div class="banner warn"><span>아직 보내지 못한 입력 ${S.outbox.length}건 (이 폰에 보관 중, 연결되면 자동 전송)</span><button id="retry">지금 보내기</button></div>`);
+  if (S.rejected.length) b.push(`<div class="banner warn"><span>잠긴 구역이라 저장하지 못한 입력 ${S.rejected.length}건 (${[...new Set(S.rejected.map(op => locName(opLoc(op))))].join(", ")}). 잠금을 푼 뒤 다시 보내세요.</span><button id="resend">다시 보내기</button><button id="dropRej">${S.dropRej ? "버리기 확인" : "버리기"}</button></div>`);
   $("banners").innerHTML = b.join("");
 }
+/* 입력·입력 내역 탭 위의 구역 잠금 줄 */
+function renderLockBar() {
+  const name = locName(S.loc), lk = S.locks[S.loc];
+  const html = lk
+    ? `<div class="lockbar locked"><span>${LOCK_SVG}<b>${esc(name)} 잠김</b> · ${esc(whoName(lk.by))} ${fmtTime(lk.at)} · 입력·수정·삭제 불가</span><button id="unlockBtn">잠금 해제</button></div>`
+    : `<div class="lockbar"><span>${esc(name)} 입력 ${active().filter(e => e.loc === S.loc).length}건</span><button id="lockBtn">입력 완료 · 잠그기</button></div>`;
+  $("lockBar1").innerHTML = html; $("lockBar2").innerHTML = html;
+}
 function renderTab() {
-  for (const t of ["input", "log", "sum"]) {
+  for (const t of ["input", "log", "all"]) {
     $("tab-" + t).setAttribute("aria-selected", S.tab === t);
     $("view-" + t).hidden = S.tab !== t;
   }
+  $("locBar").hidden = S.tab === "all";
+  if (S.tab !== "all") renderLockBar();
   if (S.tab === "input") renderItems();
   if (S.tab === "log") renderLog();
-  if (S.tab === "sum") renderSum();
+  if (S.tab === "all") {
+    for (const v of ["items", "log", "sum"]) {
+      $("seg-" + v).setAttribute("aria-pressed", S.allView === v);
+      $("all-" + v).hidden = S.allView !== v;
+    }
+    if (S.allView === "items") renderAllItems();
+    if (S.allView === "log") renderAllLog();
+    if (S.allView === "sum") renderSum();
+  }
 }
 function renderItems() {
   if (!S.cat) return;
@@ -320,16 +403,20 @@ function fmtTime(ts) {
   const t = new Date(ts);
   return isNaN(t) ? "" : `${t.getMonth() + 1}/${t.getDate()} ${String(t.getHours()).padStart(2, "0")}:${String(t.getMinutes()).padStart(2, "0")}`;
 }
-function renderLog() {
-  const w = S.lq.toLowerCase();
+/* 입력 내역: 구역 탭은 고른 구역만, 전체 탭은 모든 구역 (장소 고르기 가능) */
+function renderLog() { drawLog("logList", S.lq, S.showDel, S.loc, `${esc(locName(S.loc))}에 아직 입력이 없습니다.<br>[입력] 탭에서 품목을 눌러 수량을 넣으면 여기에 시간순으로 쌓입니다.`) }
+function renderAllLog() { drawLog("allLogList", S.aq, S.showDelA, S.lloc, "아직 입력이 없습니다.") }
+function drawLog(target, q, showDel, loc, emptyMsg) {
+  const w = q.toLowerCase();
   const list = S.entries
-    .filter(e => S.showDel || !e.del)
-    .filter(e => !S.lloc || e.loc === S.lloc)
+    .filter(e => showDel || !e.del)
+    .filter(e => !loc || e.loc === loc)
     .filter(e => !w || `${entryLabel(e)} ${e.memo || ""} ${whoName(e.by)} ${e.expr}`.toLowerCase().includes(w))
     .sort((a, b) => String(b.ts || "").localeCompare(String(a.ts || "")));
-  if (!S.loaded) { $("logList").innerHTML = `<div class="empty">입력 내역을 불러오는 중입니다.</div>`; return }
-  if (!list.length) { $("logList").innerHTML = `<div class="empty">아직 입력이 없습니다.<br>[입력] 탭에서 장소를 고르고 품목을 눌러 수량을 넣으면 여기에 시간순으로 쌓입니다.</div>`; return }
-  $("logList").innerHTML = list.map(e => {
+  if (!S.loaded) { $(target).innerHTML = `<div class="empty">입력 내역을 불러오는 중입니다.</div>`; return }
+  if (!list.length) { $(target).innerHTML = `<div class="empty">${w ? "검색에 맞는 입력이 없습니다." : emptyMsg}</div>`; return }
+  const total = list.filter(e => !e.del).reduce((s, e) => s + e.qty, 0);
+  $(target).innerHTML = `<div class="logsum">${list.filter(e => !e.del).length}건 · ${fmtInt(total)}本</div>` + list.map(e => {
     const hist = (e.edits || []).map(x => `${esc(x.expr)}→`).join("");
     return `<div class="entry${e.del ? " del" : ""}">
       <span class="what"><span class="tag">${esc(locName(e.loc))}</span> ${esc(entryLabel(e))}</span>
@@ -341,6 +428,34 @@ function renderLog() {
     </div>`;
   }).join("");
 }
+/* 전체 입력값: 품목별로 구역마다 들어간 수량과 합계 (보기 전용) */
+function renderAllItems() {
+  if (!S.cat) return;
+  const { byItemLoc, byItem } = tallies();
+  const words = S.iq.toLowerCase().replace(/×/g, "x").split(/\s+/).filter(Boolean);
+  const rows = S.items.filter(it => (S.allFilt === "all" || byItem.has(it.r)) && (!words.length || words.every(w => it.hay.includes(w))));
+  const customs = active().filter(e => e.r == null && (!words.length || words.every(w => entryLabel(e).toLowerCase().replace(/×/g, "x").includes(w))));
+  if (!rows.length && !customs.length) { $("allItemList").innerHTML = `<div class="empty">${S.allFilt === "done" && !words.length ? "아직 입력된 품목이 없습니다." : "조건에 맞는 품목이 없습니다."}</div>`; return }
+  const cell = (r, l) => { const v = byItemLoc.get(`${r}|${l.key}`); return v == null ? "" : `<span class="lq"><i>${l.name}</i>${fmtInt(v)}</span>` };
+  let html = "", g = null;
+  for (const it of rows) {
+    if (it.grp !== g) {
+      if (g !== null) html += `</div></section>`;
+      g = it.grp;
+      html += `<section><div class="grp"><span>${esc(g)}</span></div><div class="list">`;
+    }
+    const all = byItem.get(it.r);
+    html += `<div class="item ro${all ? " done" : ""}">
+      <span class="spec">${esc(it.spec)}<span class="len">${it.len ?? ""}</span></span>
+      <span class="qty${all ? "" : " zero"}">${all ? fmtInt(all) : "–"}<small>${all ? "합계" : ""}</small></span>
+      <span class="locq">${LOCS.map(l => cell(it.r, l)).join("")}</span>
+    </div>`;
+  }
+  if (g !== null) html += `</div></section>`;
+  if (customs.length) html += `<section><div class="grp"><span>목록에 없는 품목</span></div><div class="list">${customs.map(e => `
+    <div class="item ro done"><span class="spec">${esc(entryLabel(e))}</span><span class="qty">${fmtInt(e.qty)}<small>${esc(locName(e.loc))}</small></span></div>`).join("")}</div></section>`;
+  $("allItemList").innerHTML = html;
+}
 function renderSum() {
   const act = active();
   const per = LOCS.map(l => {
@@ -351,11 +466,12 @@ function renderSum() {
   const tot = per.reduce((a, p) => ({ n: a.n + p.n, qty: a.qty + p.qty, wt: a.wt + p.wt }), { n: 0, qty: 0, wt: 0 });
   const touched = new Set(act.filter(e => e.r != null).map(e => e.r)).size;
   const customs = act.filter(e => e.r == null).length;
+  const nLocked = LOCS.filter(l => isLocked(l.key)).length;
   $("sumView").innerHTML = `
     <div class="tbl"><table>
-      <thead><tr><th>장소</th><th>입력 건</th><th>품목 수</th><th>수량(本)</th><th>중량(kg)</th></tr></thead>
-      <tbody>${per.map(p => `<tr><td>${p.l.name}</td><td class="num">${p.n}</td><td class="num">${p.items}</td><td class="num">${fmtInt(p.qty)}</td><td class="num">${fmt(p.wt)}</td></tr>`).join("")}</tbody>
-      <tfoot><tr><td>계</td><td class="num">${tot.n}</td><td class="num">${touched}</td><td class="num">${fmtInt(tot.qty)}</td><td class="num">${fmt(tot.wt)}</td></tr></tfoot>
+      <thead><tr><th>장소</th><th>입력 건</th><th>품목 수</th><th>수량(本)</th><th>중량(kg)</th><th>상태</th></tr></thead>
+      <tbody>${per.map(p => `<tr><td>${p.l.name}</td><td class="num">${p.n}</td><td class="num">${p.items}</td><td class="num">${fmtInt(p.qty)}</td><td class="num">${fmt(p.wt)}</td><td>${isLocked(p.l.key) ? `<span class="tag lk">${LOCK_SVG}잠김</span>` : `<span class="tag">입력 중</span>`}</td></tr>`).join("")}</tbody>
+      <tfoot><tr><td>계</td><td class="num">${tot.n}</td><td class="num">${touched}</td><td class="num">${fmtInt(tot.qty)}</td><td class="num">${fmt(tot.wt)}</td><td>${nLocked}/${LOCS.length} 잠김</td></tr></tfoot>
     </table></div>
     <div class="card">
       <h2>PC 엑셀에 반영하기</h2>
@@ -365,7 +481,7 @@ function renderSum() {
     </div>
     <div class="card">
       <h2>이 폰 설정</h2>
-      <p>입력자: <b>${esc(S.me || "-")}</b></p>
+      <p>입력자: <b>${esc(S.me || "-")}</b> · 수정·삭제는 이 이름으로 입력한 기록만 할 수 있습니다.</p>
       <button class="btn ghost" id="openSetup">이름·현장 코드 바꾸기</button>
     </div>`;
 }
@@ -396,6 +512,7 @@ function resHtml() {
 }
 /* 키패드 입력 때는 창 전체를 다시 그리지 않고 숫자 칸과 저장 버튼만 바꾼다 (깜빡임 방지) */
 function updateDisplay() {
+  if (!$("disp")) return;  // 잠긴 구역은 키패드가 없다
   const { num, ok } = sheetState();
   $("dexpr").innerHTML = exprHtml();
   $("dres").innerHTML = resHtml();
@@ -408,9 +525,12 @@ function prevHtml() {
   const prev = it ? S.entries.filter(e => e.r === it.r && !e.del).sort((a, b) => String(a.ts || "").localeCompare(String(b.ts || ""))) : [];
   if (!prev.length) return "";
   return `<h3>이 품목에 입력된 기록 (모든 장소)</h3>${prev.map(e => `
-    <div class="prow"><span class="tag">${esc(locName(e.loc))}</span><span class="e">${esc(e.expr)} = ${fmtInt(e.qty)}${e.memo ? ` · ${esc(e.memo)}` : ""} · ${esc(whoName(e.by))}</span>
-    <span class="acts"><button data-edit="${e.id}">수정</button>${sheet.confirmDel === e.id ? `<button class="danger" data-delok="${e.id}">삭제 확인</button>` : `<button data-del="${e.id}">삭제</button>`}</span></div>`).join("")}`;
+    <div class="prow"><span class="tag">${isLocked(e.loc) ? LOCK_SVG : ""}${esc(locName(e.loc))}</span><span class="e">${esc(e.expr)} = ${fmtInt(e.qty)}${e.memo ? ` · ${esc(e.memo)}` : ""} · ${esc(whoName(e.by))}</span>
+    <span class="acts">${canChange(e) ? `<button data-edit="${e.id}">수정</button>${sheet.confirmDel === e.id ? `<button class="danger" data-delok="${e.id}">삭제 확인</button>` : `<button data-del="${e.id}">삭제</button>`}`
+      : `<span class="why">${isLocked(e.loc) ? "잠김" : "입력자만 수정"}</span>`}</span></div>`).join("")}`;
 }
+/* 수정·삭제: 잠기지 않은 구역의, 내가 입력한 기록만 */
+const canChange = e => !isLocked(e.loc) && !!S.me && e.by === S.me;
 /* 다른 사람이 같은 품목을 입력하면 아래 기록 목록만 새로 고친다 */
 function drawPrev() { const el = $("prevBox"); if (el) el.innerHTML = prevHtml() }
 function drawSheet() {
@@ -427,7 +547,8 @@ function drawSheet() {
     <div class="sheet${anim}" role="dialog" aria-modal="true" aria-label="수량 입력">
       <div class="sheet-head"><div>${head}</div><button class="x" data-act="close" aria-label="닫기">✕</button></div>
       ${sheet.custom ? `<div class="custom-fields"><input id="cname" placeholder="품명·규격 (예: ONE SHEET 63.5×480×)" value="${esc(sheet.cname)}"><input id="clen" inputmode="numeric" placeholder="길이(mm)" value="${esc(sheet.clen)}"></div>` : ""}
-      <div class="locs">${LOCS.map(l => `<button class="loc" data-sloc="${l.key}" aria-pressed="${sheet.loc === l.key}">${l.name}</button>`).join("")}</div>
+      <div class="locs">${LOCS.map(l => `<button class="loc${isLocked(l.key) ? " locked" : ""}" data-sloc="${l.key}" aria-pressed="${sheet.loc === l.key}">${isLocked(l.key) ? LOCK_SVG : ""}${l.name}</button>`).join("")}</div>
+      ${isLocked(sheet.loc) ? `<div class="lockbar locked"><span>${LOCK_SVG}<b>${esc(locName(sheet.loc))}</b>은(는) 입력을 마치고 잠근 구역입니다. 고치려면 잠금을 먼저 풀어야 합니다.</span></div>` : `
       ${sheet.editing ? `<div class="editing"><span>기존 입력 수정 중 (이전 값 ${esc(sheet.editing.expr)})</span><button data-act="canceledit">새로 입력으로</button></div>` : ""}
       <div class="display${sheet.expr && !num ? " bad" : ""}" id="disp">
         <div class="expr" id="dexpr">${exprHtml()}</div>
@@ -439,11 +560,12 @@ function drawSheet() {
         ${["4", "5", "6"].map(k => `<button class="k" data-k="${k}">${k}</button>`).join("")}<button class="k op" data-k="×">×</button>
         ${["1", "2", "3"].map(k => `<button class="k" data-k="${k}">${k}</button>`).join("")}<button class="k op" data-k="+">+</button>
         <button class="k fn" data-k="clear">지움</button><button class="k" data-k="0">0</button><button class="k save" id="saveBtn" data-act="save" ${ok ? "" : "disabled"} style="grid-column: span 2">${sheet.editing ? "수정 저장" : "저장"}</button>
-      </div>
+      </div>`}
       <div class="prev" id="prevBox">${prevHtml()}</div>
     </div>`;
 }
 function press(k) {
+  if (isLocked(sheet.loc)) return;
   let s = sheet.expr;
   if (k === "back") s = s.slice(0, -1);
   else if (k === "clear") s = "";
@@ -453,6 +575,8 @@ function press(k) {
   sheet.expr = s; updateDisplay();
 }
 function saveSheet() {
+  if (isLocked(sheet.loc)) { toast("잠긴 구역에는 저장할 수 없습니다"); return }
+  if (sheet.editing && !canChange(sheet.editing)) { toast("이 기록은 수정할 수 없습니다"); return }
   const val = evalExpr(sheet.expr);
   if (typeof val !== "number" || isNaN(val)) return;
   const memo = ($("memo")?.value || "").trim();
@@ -484,8 +608,21 @@ function toast(msg) {
 document.addEventListener("click", ev => {
   const t = ev.target.closest("button, [data-act]");
   if (!t) return;
+  if (t.dataset.dlg) { t.dataset.dlg === "ok" ? submitDlg() : closeDlg(); return }
   if (t.dataset.loc) { S.loc = t.dataset.loc; store.set("rm-loc", S.loc); renderLocBar(); renderTab(); return }
-  if (t.classList.contains("tab")) { S.tab = t.id.slice(4); renderTab(); return }
+  if (t.classList.contains("tab")) { S.tab = t.id.slice(4); renderLocBar(); renderTab(); return }
+  if (t.id.startsWith("seg-")) { S.allView = t.id.slice(4); renderTab(); return }
+  if (t.id === "af-done" || t.id === "af-all") {
+    S.allFilt = t.id.slice(3); ["done", "all"].forEach(f => $("af-" + f).setAttribute("aria-pressed", S.allFilt === f)); renderAllItems(); return
+  }
+  if (t.id === "lockBtn") { openDlg("lock", S.loc); return }
+  if (t.id === "unlockBtn") { openDlg("unlock", S.loc); return }
+  if (t.id === "showDelA") { S.showDelA = !S.showDelA; t.setAttribute("aria-pressed", S.showDelA); renderAllLog(); return }
+  if (t.id === "resend") { S.outbox.push(...S.rejected); S.rejected = []; S.dropRej = false; saveOutbox(); renderBanners(); flush(); return }
+  if (t.id === "dropRej") {
+    if (!S.dropRej) { S.dropRej = true; renderBanners(); return }
+    S.rejected = []; S.dropRej = false; saveOutbox(); renderBanners(); return
+  }
   if (t.id === "f-all" || t.id === "f-todo" || t.id === "f-done") {
     S.filt = t.id.slice(2); ["all", "todo", "done"].forEach(f => $("f-" + f).setAttribute("aria-pressed", S.filt === f)); renderItems(); return
   }
@@ -500,9 +637,9 @@ document.addEventListener("click", ev => {
   if (t.dataset.k) { keepFields(); press(t.dataset.k); return }
   if (t.dataset.act === "save") { keepFields(); t.disabled = true; saveSheet(); return }
   if (t.dataset.act === "canceledit") { sheet.editing = null; sheet.expr = ""; drawSheet(); return }
-  if (t.dataset.edit) { const e = S.entries.find(x => x.id === t.dataset.edit); if (e) { keepFields(); sheet.editing = e; sheet.expr = e.expr; sheet.memo = e.memo || ""; sheet.loc = e.loc; drawSheet() } return }
+  if (t.dataset.edit) { const e = S.entries.find(x => x.id === t.dataset.edit); if (e && canChange(e)) { keepFields(); sheet.editing = e; sheet.expr = e.expr; sheet.memo = e.memo || ""; sheet.loc = e.loc; drawSheet() } return }
   if (t.dataset.del) { keepFields(); sheet.confirmDel = t.dataset.del; drawPrev(); return }
-  if (t.dataset.delok) { const e = S.entries.find(x => x.id === t.dataset.delok); sheet.confirmDel = null; if (e) deleteEntry(e); drawPrev(); return }
+  if (t.dataset.delok) { const e = S.entries.find(x => x.id === t.dataset.delok); sheet.confirmDel = null; if (e && canChange(e)) deleteEntry(e); drawPrev(); return }
 });
 function keepFields() {
   if (!sheet) return;
@@ -513,14 +650,17 @@ function keepFields() {
 document.addEventListener("input", ev => {
   if (ev.target.id === "q") { S.q = ev.target.value; renderItems() }
   if (ev.target.id === "lq") { S.lq = ev.target.value; renderLog() }
+  if (ev.target.id === "aq") { S.aq = ev.target.value; renderAllLog() }
+  if (ev.target.id === "iq") { S.iq = ev.target.value; renderAllItems() }
   if (ev.target.id === "cname" && sheet) { sheet.cname = ev.target.value; updateDisplay() }
 });
 document.addEventListener("change", ev => {
   if (ev.target.id === "grpSel") { S.grp = ev.target.value; renderItems() }
   if (ev.target.id === "monthSel") setMonth(ev.target.value).catch(() => toast("품목 목록을 불러오지 못했습니다. 새로고침해 주세요."));
-  if (ev.target.id === "lloc") { S.lloc = ev.target.value; renderLog() }
+  if (ev.target.id === "lloc") { S.lloc = ev.target.value; renderAllLog() }
 });
 document.addEventListener("keydown", ev => {
+  if (dlg) { if (ev.key === "Enter") { ev.preventDefault(); submitDlg() } else if (ev.key === "Escape") closeDlg(); return }
   if (!sheet || ev.target.tagName === "INPUT") return;
   if (/^[0-9]$/.test(ev.key)) press(ev.key);
   else if (ev.key === "*" || ev.key === "x") press("×");
@@ -550,6 +690,7 @@ if ("serviceWorker" in navigator && location.protocol === "https:") navigator.se
   $("lloc").insertAdjacentHTML("beforeend", LOCS.map(l => `<option value="${l.key}">${l.name}</option>`).join(""));
   try { await loadCatalogs() } catch { $("itemList").innerHTML = `<div class="empty">품목 목록을 불러오지 못했습니다. 통신을 확인하고 새로고침해 주세요.</div>`; return }
   S.server = store.get("rm-cache-" + S.month, []);
+  S.locks = store.get("rm-locks-" + S.month, {});
   merge(); renderAll();
   if (!S.me || !S.code) openSetup();
   else { flush(); refresh() }

@@ -180,6 +180,35 @@ tfoot td { font-weight: 700 }
 .sync { font-size: 11.5px; color: var(--muted); font-family: var(--font-num) }
 .sync.off { color: var(--warn) }
 .top .right { display: flex; flex-direction: column; align-items: flex-end; gap: 2px }
+
+/* 구역 잠금 */
+.ico { width: 13px; height: 13px; vertical-align: -1px; margin-right: 4px; flex: none }
+.loc.locked:not([aria-pressed="true"]) { color: var(--muted); background: var(--key) }
+.lockbar { margin-top: 10px; display: flex; align-items: center; justify-content: space-between; gap: 10px; border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 8px 10px; font-size: 13.5px; color: var(--muted) }
+.lockbar button { flex: none; border: 1px solid var(--accent); color: var(--accent); background: none; border-radius: 6px; padding: 5px 10px; font-size: 13px; font-weight: 700 }
+.lockbar.locked { background: var(--warn-soft); border-color: transparent; color: var(--warn) }
+.lockbar.locked b { color: var(--fg) }
+.lockbar.locked button { border-color: var(--warn); color: var(--warn) }
+.sheet .lockbar { margin-block: 8px 4px }
+.prow .why { color: var(--muted); font-size: 12px }
+.tag.lk { background: var(--warn-soft); color: var(--warn) }
+.dlg { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 31; width: min(380px, calc(100% - 32px)); background: var(--surface); border-radius: 14px; padding: 18px; display: flex; flex-direction: column; gap: 8px }
+.dlg h2 { margin: 0; font-size: 17px }
+.dlg p { margin: 0; color: var(--muted); font-size: 13.5px }
+.dlg input { border: 1px solid var(--line); background: var(--bg); color: var(--fg); border-radius: 8px; padding: 11px 12px; font: inherit; font-size: 16px; margin-top: 4px }
+.dlg .err { color: var(--danger); font-size: 13px; min-height: 1em }
+.dlg-btns { display: flex; gap: 8px; justify-content: flex-end }
+#dlgRoot .scrim { z-index: 30 }
+
+/* 전체 */
+.seg { display: flex; gap: 6px; padding-top: 12px; flex-wrap: wrap }
+.seg .chip { font-size: 14px; padding: 6px 12px }
+.item.ro { cursor: default }
+.item .locq { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 4px 10px; font-family: var(--font-num); font-size: 12.5px }
+.item .locq:empty { display: none }
+.item .locq .lq i { font-style: normal; font-family: var(--font-body); color: var(--muted); margin-right: 3px }
+.allitems { padding-bottom: 28px }
+.logsum { color: var(--muted); font-size: 12.5px; font-family: var(--font-num); text-align: right }
 </style>
 </head>
 <body>
@@ -192,13 +221,14 @@ tfoot td { font-weight: 700 }
   <div class="tabs" role="tablist">
     <button class="tab" role="tab" id="tab-input" aria-selected="true">입력</button>
     <button class="tab" role="tab" id="tab-log" aria-selected="false">입력 내역</button>
-    <button class="tab" role="tab" id="tab-sum" aria-selected="false">집계</button>
+    <button class="tab" role="tab" id="tab-all" aria-selected="false">전체</button>
   </div>
 </header>
 
 <main class="wrap">
   <div id="banners"></div>
   <section id="view-input">
+    <div id="lockBar1"></div>
     <div class="search">
       <input id="q" type="search" placeholder="규격·길이·품목코드 검색 (예: 250 4820)" autocomplete="off">
       <select id="grpSel" aria-label="품목군"><option value="">전체 품목군</option></select>
@@ -212,19 +242,44 @@ tfoot td { font-weight: 700 }
     <button class="addcustom" id="addCustom">＋ 목록에 없는 품목 입력 (당월 추가품목)</button>
   </section>
   <section id="view-log" hidden>
+    <div id="lockBar2"></div>
     <div class="search">
       <input id="lq" type="search" placeholder="품목·입력자·메모 검색" autocomplete="off">
-      <select id="lloc" aria-label="장소"><option value="">모든 장소</option></select>
     </div>
     <div class="filters"><button class="chip" id="showDel" aria-pressed="false">삭제한 기록도 보기</button></div>
     <div class="log" id="logList"></div>
   </section>
-  <section id="view-sum" hidden>
-    <div class="sum" id="sumView"></div>
+  <!-- 전체: 구역과 상관없이 모든 입력을 본다 (보기 전용) -->
+  <section id="view-all" hidden>
+    <div class="seg" role="group" aria-label="전체 보기">
+      <button class="chip" id="seg-items" aria-pressed="true">전체 입력값</button>
+      <button class="chip" id="seg-log" aria-pressed="false">전체 입력 내역</button>
+      <button class="chip" id="seg-sum" aria-pressed="false">집계</button>
+    </div>
+    <div id="all-items">
+      <div class="search"><input id="iq" type="search" placeholder="규격·길이·품목코드 검색" autocomplete="off"></div>
+      <div class="filters">
+        <button class="chip" id="af-done" aria-pressed="true">입력된 품목만</button>
+        <button class="chip" id="af-all" aria-pressed="false">모든 품목</button>
+      </div>
+      <div id="allItemList" class="allitems"></div>
+    </div>
+    <div id="all-log" hidden>
+      <div class="search">
+        <input id="aq" type="search" placeholder="품목·입력자·메모 검색" autocomplete="off">
+        <select id="lloc" aria-label="장소"><option value="">모든 장소</option></select>
+      </div>
+      <div class="filters"><button class="chip" id="showDelA" aria-pressed="false">삭제한 기록도 보기</button></div>
+      <div class="log" id="allLogList"></div>
+    </div>
+    <div id="all-sum" hidden>
+      <div class="sum" id="sumView"></div>
+    </div>
   </section>
 </main>
 
 <div id="sheetRoot"></div>
+<div id="dlgRoot"></div>
 <div id="toastRoot"></div>
 
 

@@ -1,6 +1,6 @@
 /* 통신이 안 되는 곳에서도 앱이 열리도록 화면 파일을 폰에 보관한다.
  * 파일을 고쳐 올릴 때마다 VERSION 을 바꾸면 폰이 새 파일을 받는다. 구글 시트 주소(다른 사이트)는 건드리지 않는다. */
-const VERSION = "rm-2026-10-30-1";
+const VERSION = "rm-2026-10-30-2";
 const SHELL = ["./", "index.html", "app.js", "config.js", "manifest.webmanifest", "icon-192.png", "icon-512.png", "catalogs.json"];
 
 self.addEventListener("install", e => {
