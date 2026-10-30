@@ -681,7 +681,16 @@ const setHdr = () => document.documentElement.style.setProperty("--hdr", hdr.off
 setHdr();
 if (window.ResizeObserver) new ResizeObserver(setHdr).observe(hdr);
 
-if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("sw.js").catch(() => {});
+if ("serviceWorker" in navigator && location.protocol === "https:") {
+  navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }).catch(() => {});
+  // 새 버전이 깔리면 한 번 다시 열어 바로 새 화면을 보여준다 (입력 중이 아닐 때만)
+  let reloaded = false;
+  const hadOld = !!navigator.serviceWorker.controller;  // 처음 설치 때는 다시 열 필요 없다
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (!hadOld || reloaded || sheet || dlg) return;
+    reloaded = true; location.reload();
+  });
+}
 
 (async function start() {
   S.loc = store.get("rm-loc", "I");
