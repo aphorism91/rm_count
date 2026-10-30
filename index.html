@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#1f5fbf">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="원자재실사">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>진천2 원자재 실사</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;700&family=IBM+Plex+Mono:wght@500;600&display=swap">
+<style>
+/* Layout: 한 손 조작용 단일 칼럼. 위에는 장소·검색 고정, 가운데 품목 목록, 품목을 누르면 아래에서 계산 키패드가 올라온다. */
+:root {
+  --bg: #eef1f4;          /* 알루미늄 판 같은 차가운 회색 */
+  --surface: #ffffff;
+  --line: #d3d9e0;
+  --fg: #1b232c;
+  --muted: #5d6874;
+  --accent: #1f5fbf;      /* 도면 마킹 블루 */
+  --accent-fg: #ffffff;
+  --accent-soft: #dfe9f8;
+  --ok: #1d7a46;
+  --ok-soft: #dcf1e4;
+  --warn: #a35a00;
+  --warn-soft: #fbecd5;
+  --danger: #b3261e;
+  --key: #f6f8fa;
+  --font-body: "IBM Plex Sans KR", "Malgun Gothic", "Apple SD Gothic Neo", system-ui, sans-serif;
+  --font-num: "IBM Plex Mono", ui-monospace, "Consolas", monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #12171d; --surface: #1b222a; --line: #2e3842; --fg: #e5eaef; --muted: #96a2ae;
+  --accent: #6ea3f0; --accent-fg: #0d1520; --accent-soft: #1f324d;
+  --ok: #6fcf97; --ok-soft: #173326; --warn: #f0b35c; --warn-soft: #3a2a12; --danger: #f2827a; --key: #222b34;
+  color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #12171d; --surface: #1b222a; --line: #2e3842; --fg: #e5eaef; --muted: #96a2ae;
+  --accent: #6ea3f0; --accent-fg: #0d1520; --accent-soft: #1f324d;
+  --ok: #6fcf97; --ok-soft: #173326; --warn: #f0b35c; --warn-soft: #3a2a12; --danger: #f2827a; --key: #222b34;
+  color-scheme: dark }
+
+html { padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px) }
+body { margin: 0 }
+[hidden] { display: none !important }
+* { box-sizing: border-box }
+body { background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 15px; line-height: 1.45; -webkit-tap-highlight-color: transparent }
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--surface) }
+button { font: inherit; color: inherit; cursor: pointer }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }
+.num { font-family: var(--font-num); font-variant-numeric: tabular-nums }
+.wrap { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)) }
+
+header { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--surface); border-bottom: 1px solid var(--line) }
+.top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding-block: 10px 6px }
+.top h1 { margin: 0; font-size: 17px; font-weight: 700; letter-spacing: -0.01em }
+.top { align-items: center }
+.month { flex: none; border: 1px solid var(--line); background: var(--accent-soft); color: var(--fg); border-radius: 8px; padding: 5px 8px; font: inherit; font-size: 13.5px; font-weight: 700 }
+.locs { display: flex; gap: 6px; overflow-x: auto; padding-block: 4px 8px; scrollbar-width: none }
+.locs::-webkit-scrollbar { display: none }
+.loc { flex: none; border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 6px 13px; font-size: 14px; font-weight: 500 }
+.loc[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-fg) }
+.loc small { font-family: var(--font-num); font-size: 11.5px; opacity: .75; margin-left: 4px }
+.tabs { display: grid; grid-template-columns: repeat(3, 1fr); border-top: 1px solid var(--line) }
+.tab { background: none; border: 0; padding: 9px 0; font-size: 14px; color: var(--muted); border-bottom: 2px solid transparent }
+.tab[aria-selected="true"] { color: var(--fg); font-weight: 700; border-bottom-color: var(--accent) }
+
+.banner { margin-top: 10px; border-radius: 8px; padding: 10px 12px; font-size: 13.5px; display: flex; gap: 10px; align-items: center; justify-content: space-between }
+.banner.warn { background: var(--warn-soft); color: var(--warn) }
+.banner.info { background: var(--accent-soft); color: var(--fg) }
+.banner button { border: 1px solid currentColor; background: none; border-radius: 6px; padding: 4px 10px; font-size: 13px; color: inherit; flex: none }
+
+.search { display: flex; gap: 8px; padding-block: 10px 6px }
+.search input { flex: 1; min-width: 0; border: 1px solid var(--line); background: var(--surface); color: var(--fg); border-radius: 8px; padding: 10px 12px; font: inherit }
+.search select { flex: none; max-width: 42%; border: 1px solid var(--line); background: var(--surface); color: var(--fg); border-radius: 8px; padding: 0 8px; font: inherit; font-size: 14px }
+.filters { display: flex; gap: 6px; padding-bottom: 6px; flex-wrap: wrap }
+.chip { border: 1px solid var(--line); background: var(--surface); border-radius: 6px; padding: 4px 10px; font-size: 13px; color: var(--muted) }
+.chip[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); font-weight: 700 }
+
+/* 품목군 이름은 스크롤해도 상단(헤더 바로 아래)에 붙어 있고, 다음 품목군이 오면 밀려난다 */
+.grp { position: sticky; top: calc(env(safe-area-inset-top, 0px) + var(--hdr, 120px)); z-index: 3; margin: 0; padding: 12px 0 6px; background: var(--bg);
+  font-size: 12.5px; font-weight: 700; color: var(--accent); letter-spacing: .04em; text-transform: uppercase; display: flex; justify-content: space-between; gap: 8px }
+.grp small { color: var(--muted); font-weight: 500; letter-spacing: 0; text-transform: none; font-family: var(--font-num) }
+.list { display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; overflow: hidden }
+.item { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; align-items: center; text-align: left; background: none; border: 0; border-top: 1px solid var(--line); padding: 11px 12px }
+.item:first-child { border-top: 0 }
+.item .spec { font-weight: 500; min-width: 0; overflow-wrap: anywhere }
+.item .spec .len { font-family: var(--font-num); font-weight: 600 }
+.item .meta { grid-column: 1; color: var(--muted); font-size: 12px; font-family: var(--font-num) }
+.item .qty { grid-row: 1 / span 2; grid-column: 2; text-align: right; font-family: var(--font-num); font-size: 15px; font-weight: 600 }
+.item .qty small { display: block; font-size: 11px; font-weight: 500; color: var(--muted) }
+.item .qty.zero { color: var(--muted); font-weight: 500 }
+.item.done { background: linear-gradient(90deg, var(--ok-soft), transparent 70%) }
+.item.done .qty { color: var(--ok) }
+.empty { color: var(--muted); text-align: center; padding: 28px 12px; font-size: 14px }
+.addcustom { width: 100%; margin: 14px 0 28px; border: 1px dashed var(--line); background: none; border-radius: 10px; padding: 12px; color: var(--accent); font-weight: 500 }
+
+/* 입력 내역 */
+.log { display: flex; flex-direction: column; gap: 8px; padding-block: 12px 28px }
+.entry { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; display: grid; grid-template-columns: 1fr auto; gap: 2px 10px }
+.entry .what { font-weight: 500; min-width: 0; overflow-wrap: anywhere }
+.entry .how { font-family: var(--font-num); text-align: right; font-weight: 600 }
+.entry .how small { display: block; color: var(--muted); font-weight: 500; font-size: 12px }
+.entry .who { grid-column: 1 / -1; color: var(--muted); font-size: 12px; display: flex; gap: 8px; flex-wrap: wrap }
+.entry.del { opacity: .55 }
+.entry.del .what, .entry.del .how { text-decoration: line-through }
+.tag { display: inline-block; border-radius: 4px; padding: 0 6px; font-size: 11.5px; font-weight: 700; background: var(--accent-soft); color: var(--accent) }
+.tag.edit { background: var(--warn-soft); color: var(--warn) }
+.tag.delt { background: transparent; border: 1px solid var(--danger); color: var(--danger) }
+
+/* 집계 */
+.sum { padding-block: 12px 28px; display: flex; flex-direction: column; gap: 14px }
+.tbl { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 10px }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px }
+th, td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap }
+th:first-child, td:first-child { text-align: left }
+th { font-size: 12px; color: var(--muted); font-weight: 500 }
+tr:last-child td { border-bottom: 0 }
+tfoot td { font-weight: 700 }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px }
+.card h2 { margin: 0 0 6px; font-size: 15px }
+.card p { margin: 0 0 10px; color: var(--muted); font-size: 13.5px }
+.btn { border: 0; background: var(--accent); color: var(--accent-fg); border-radius: 8px; padding: 10px 14px; font-weight: 700 }
+.btn.ghost { background: none; border: 1px solid var(--line); color: var(--fg); font-weight: 500 }
+
+/* 입력 시트 */
+.scrim { position: fixed; inset: 0; background: rgb(10 14 20 / .45); z-index: 20 }
+.sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 21; background: var(--surface); border-radius: 14px 14px 0 0; max-height: 92%; overflow-y: auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px)); padding-top: 12px }
+.sheet-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px }
+.sheet-head h2 { margin: 0; font-size: 17px; overflow-wrap: anywhere }
+.sheet-head .meta { color: var(--muted); font-size: 12.5px; font-family: var(--font-num) }
+.x { border: 0; background: var(--key); border-radius: 8px; width: 36px; height: 36px; flex: none; font-size: 18px }
+.sheet .locs { padding-block: 10px 6px }
+.custom-fields { display: grid; grid-template-columns: 1fr 110px; gap: 8px; margin-top: 10px }
+.custom-fields input, .memo input { width: 100%; border: 1px solid var(--line); background: var(--bg); color: var(--fg); border-radius: 8px; padding: 9px 10px; font: inherit }
+.display { margin-top: 8px; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: var(--bg); min-height: 74px; display: flex; flex-direction: column; justify-content: center }
+.display .expr { font-family: var(--font-num); font-size: 22px; font-weight: 600; overflow-wrap: anywhere; min-height: 30px }
+.display .expr .ph { color: var(--muted); font-weight: 500; font-size: 15px; font-family: var(--font-body) }
+.display .res { color: var(--muted); font-size: 13px; font-family: var(--font-num) }
+.display .res b { color: var(--fg); font-size: 15px }
+.display.bad .res { color: var(--danger) }
+.memo { margin-top: 8px }
+.keys { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-top: 10px }
+.k { touch-action: manipulation; user-select: none; -webkit-user-select: none; border: 0; background: var(--key); border-radius: 10px; height: 54px; font-family: var(--font-num); font-size: 22px; font-weight: 600 }
+.k:active { filter: brightness(.92) }
+.k.op { color: var(--accent); background: var(--accent-soft) }
+.k.fn { font-family: var(--font-body); font-size: 15px; font-weight: 500 }
+.k.save { background: var(--accent); color: var(--accent-fg); font-family: var(--font-body); font-size: 17px; font-weight: 700 }
+.k.save[disabled] { opacity: .45 }
+.prev { margin-top: 14px }
+.prev h3 { margin: 0 0 6px; font-size: 13px; color: var(--muted); font-weight: 500 }
+.prow { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); font-size: 13.5px }
+.prow .e { font-family: var(--font-num); min-width: 0; overflow-wrap: anywhere }
+.prow .acts { display: flex; gap: 6px }
+.prow .acts button { border: 1px solid var(--line); background: none; border-radius: 6px; padding: 3px 9px; font-size: 12.5px }
+.prow .acts .danger { border-color: var(--danger); color: var(--danger) }
+.editing { margin-top: 8px; font-size: 13px; color: var(--warn); display: flex; justify-content: space-between; align-items: center }
+.editing button { border: 0; background: none; color: var(--accent); font-size: 13px }
+
+.toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(18px + env(safe-area-inset-bottom, 0px)); z-index: 30; background: var(--fg); color: var(--bg); border-radius: 8px; padding: 9px 14px; font-size: 14px; max-width: calc(100% - 32px) }
+@media (prefers-reduced-motion: no-preference) { .sheet.anim { animation: up .18s ease-out } @keyframes up { from { transform: translateY(24px); opacity: .6 } } }
+@media (min-width: 720px) { main, header > div { max-width: 720px; margin: 0 auto } .sheet { max-width: 560px; margin: 0 auto } }
+
+/* 처음 설정(이름·현장 코드) */
+.setup { position: fixed; inset: 0; z-index: 40; background: var(--bg); display: flex; align-items: center; justify-content: center;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)) }
+.setup form { width: 100%; max-width: 380px; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 20px; display: flex; flex-direction: column; gap: 12px }
+.setup h2 { margin: 0; font-size: 19px }
+.setup p { margin: 0; color: var(--muted); font-size: 13.5px }
+.setup label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-weight: 500 }
+.setup input { border: 1px solid var(--line); background: var(--bg); color: var(--fg); border-radius: 8px; padding: 11px 12px; font: inherit; font-size: 16px }
+.setup .err { color: var(--danger); font-size: 13.5px; min-height: 1em }
+.setup .btn { padding: 12px }
+.sync { font-size: 11.5px; color: var(--muted); font-family: var(--font-num) }
+.sync.off { color: var(--warn) }
+.top .right { display: flex; flex-direction: column; align-items: flex-end; gap: 2px }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <div class="top"><h1>진천2 원자재 실사</h1><div class="right"><select id="monthSel" class="month" aria-label="조사월"><option>불러오는 중</option></select><span class="sync" id="sync"></span></div></div>
+    <div class="locs" id="locBar" role="group" aria-label="조사 장소"></div>
+  </div>
+  <div class="tabs" role="tablist">
+    <button class="tab" role="tab" id="tab-input" aria-selected="true">입력</button>
+    <button class="tab" role="tab" id="tab-log" aria-selected="false">입력 내역</button>
+    <button class="tab" role="tab" id="tab-sum" aria-selected="false">집계</button>
+  </div>
+</header>
+
+<main class="wrap">
+  <div id="banners"></div>
+  <section id="view-input">
+    <div class="search">
+      <input id="q" type="search" placeholder="규격·길이·품목코드 검색 (예: 250 4820)" autocomplete="off">
+      <select id="grpSel" aria-label="품목군"><option value="">전체 품목군</option></select>
+    </div>
+    <div class="filters">
+      <button class="chip" id="f-all" aria-pressed="true">전체</button>
+      <button class="chip" id="f-todo" aria-pressed="false">이 장소 미입력</button>
+      <button class="chip" id="f-done" aria-pressed="false">이 장소 입력됨</button>
+    </div>
+    <div id="itemList"></div>
+    <button class="addcustom" id="addCustom">＋ 목록에 없는 품목 입력 (당월 추가품목)</button>
+  </section>
+  <section id="view-log" hidden>
+    <div class="search">
+      <input id="lq" type="search" placeholder="품목·입력자·메모 검색" autocomplete="off">
+      <select id="lloc" aria-label="장소"><option value="">모든 장소</option></select>
+    </div>
+    <div class="filters"><button class="chip" id="showDel" aria-pressed="false">삭제한 기록도 보기</button></div>
+    <div class="log" id="logList"></div>
+  </section>
+  <section id="view-sum" hidden>
+    <div class="sum" id="sumView"></div>
+  </section>
+</main>
+
+<div id="sheetRoot"></div>
+<div id="toastRoot"></div>
+
+
+<div class="setup" id="setup" hidden>
+  <form id="setupForm" autocomplete="off">
+    <h2>진천2 원자재 실사</h2>
+    <p>처음 한 번만 입력하면 이 폰에 기억됩니다. 입력 기록에 이름이 함께 남습니다.</p>
+    <label>이름<input id="setName" maxlength="20" placeholder="예: 김민수" required></label>
+    <label>현장 코드<input id="setCode" inputmode="numeric" maxlength="12" placeholder="담당자에게 받은 숫자" required></label>
+    <div class="err" id="setErr"></div>
+    <button class="btn" type="submit" id="setBtn">시작하기</button>
+  </form>
+</div>
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
