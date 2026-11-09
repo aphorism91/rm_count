@@ -25,6 +25,7 @@ const S = {
   loc: "I", tab: "input", q: "", grp: "", filt: "all", lq: "", showDel: false,
   allView: "items", iq: "", allFilt: "done", aq: "", lloc: "", showDelA: false,
   locks: {}, mgrs: {}, admin: "", me: "", code: "", outbox: [], rejected: [], sending: false,
+  prev: null, prevM: "", cq: "", cloc: "", cfilt: "big",
 };
 const isLocked = loc => !!S.locks[loc];
 /* 권한: 구역 담당자는 그 구역 입력·잠금과 자기 기록 수정·삭제, 관리자는 전부 (구글 시트 쪽에서도 같은 규칙으로 막는다) */
@@ -121,7 +122,7 @@ async function setMonth(m) {
   S.mgrs = store.get("rm-mgrs-" + m, {});
   S.loaded = S.server.length > 0; S.sig = "";
   merge(); renderAll();
-  refresh();
+  refresh(); loadPrev();
 }
 /* 다른 달 품목 목록으로 입력한 기록은 규격·길이가 같은 품목에 붙인다 */
 function remap(e) {
@@ -192,6 +193,38 @@ async function refresh() {
   mergeAndRender();
 }
 
+/* ---------- 지난달 입력 (전월 비교·빠진 품목) ---------- */
+/* 품목은 규격·길이로 맞춘다 (집계표 행 번호는 달마다 바뀔 수 있다) */
+const itemKey = e => `${e.grp}|${e.spec}|${e.len ?? ""}`;
+let prevIdx = new Map();  // "품목|구역" → 수량, "품목|" → 전 구역 합계
+function setPrev(m, list) {
+  S.prevM = m; S.prev = list;
+  prevIdx = new Map();
+  for (const e of list || []) {
+    if (e.del || e.r == null) continue;
+    const k = itemKey(e), q = Number(e.qty || 0);
+    prevIdx.set(k + "|" + e.loc, (prevIdx.get(k + "|" + e.loc) || 0) + q);
+    prevIdx.set(k + "|", (prevIdx.get(k + "|") || 0) + q);
+  }
+}
+/* 지난달 자료가 없으면 null (비교하지 않음) */
+const prevQty = (it, loc) => S.prev && S.prev.length ? (prevIdx.get(itemKey(it) + "|" + (loc || "")) || 0) : null;
+/* 크게 다름: 2배 이상·절반 이하, 또는 한쪽에만 있음 */
+const bigDiff = (pv, cur) => pv > 0 && cur > 0 ? (cur >= pv * 2 || cur <= pv * 0.5) : pv !== cur;
+async function loadPrev() {
+  const m = addMonth(S.month, -1), month = S.month;
+  if (S.prevM !== m) setPrev(m, store.get("rm-cache-" + m, null));
+  if (!API || !S.code) return;
+  try {
+    const j = await apiGet({ action: "list", month: m });
+    if (j.ok === false || S.month !== month) return;
+    store.set("rm-cache-" + m, j.entries || []);
+    setPrev(m, j.entries || []);
+  } catch { return }  // 통신이 안 되면 이 폰에 받아둔 지난달 자료를 쓴다
+  renderAll();
+  if (sheet && !sheet.dirty) updateDisplay();
+}
+
 S.outbox = store.get("rm-outbox", []);
 S.rejected = store.get("rm-rejected", []);
 function saveOutbox() { store.set("rm-outbox", S.outbox); store.set("rm-rejected", S.rejected) }
@@ -247,16 +280,10 @@ function deleteEntry(e) {
 /* 대기열에 두지 않고 바로 보낸다 (통신이 될 때만) */
 let dlg = null;
 function openDlg(kind, loc) { dlg = { kind, loc, err: "", busy: false }; drawDlg(); if (kind === "lock") loadMiss(loc) }
-/* 잠그기 전 확인: 지난달 이 구역에 있었는데 이번 달에 아직 안 넣은 품목 (규격·길이로 맞춘다) */
-const itemKey = e => `${e.grp}|${e.spec}|${e.len ?? ""}`;
+/* 잠그기 전 확인: 지난달 이 구역에 있었는데 이번 달에 아직 안 넣은 품목 */
 async function loadMiss(loc) {
-  const prev = addMonth(S.month, -1);
-  let list = null;
-  try {
-    const j = await apiGet({ action: "list", month: prev });
-    if (j.ok !== false) { list = j.entries || []; store.set("rm-cache-" + prev, list) }
-  } catch {}
-  if (!list) list = store.get("rm-cache-" + prev, null);  // 통신이 안 되면 이 폰에 받아둔 지난달 자료로
+  await loadPrev();
+  const prev = S.prevM, list = S.prev;
   if (!dlg || dlg.kind !== "lock" || dlg.loc !== loc) return;
   if (!list || !list.length) { dlg.miss = { none: true, prev }; drawDlg(); return }
   const now = new Set(active().filter(e => e.loc === loc && e.r != null).map(itemKey));
@@ -455,7 +482,7 @@ $("setupForm").addEventListener("submit", async ev => {
   if (!name) { $("setErr").textContent = setup.manual ? "이름을 넣어 주세요." : "이름을 골라 주세요."; return }
   S.me = name; S.code = setup.code; store.set("rm-name", name); store.set("rm-code", setup.code);
   $("setup").hidden = true; setup = null;
-  S.sig = ""; flush(); refresh(); renderAll();
+  S.sig = ""; flush(); refresh(); loadPrev(); renderAll();
 });
 
 /* ---------- 화면 ---------- */
@@ -502,14 +529,57 @@ function renderTab() {
   if (S.tab === "input") renderItems();
   if (S.tab === "log") renderLog();
   if (S.tab === "all") {
-    for (const v of ["items", "log", "sum"]) {
+    for (const v of ["items", "log", "cmp", "sum"]) {
       $("seg-" + v).setAttribute("aria-pressed", S.allView === v);
       $("all-" + v).hidden = S.allView !== v;
     }
     if (S.allView === "items") renderAllItems();
     if (S.allView === "log") renderAllLog();
+    if (S.allView === "cmp") renderCmp();
     if (S.allView === "sum") renderSum();
   }
+}
+/* 전월 비교: 품목별 지난달·이번 달 수량과 차이 (차이 큰 순). 목록에 없는 품목은 비교하지 않는다 */
+function renderCmp() {
+  const el = $("cmpView");
+  if (!S.cat) return;
+  const pm = addMonth(S.month, -1);
+  if (S.prev == null) { el.innerHTML = `<div class="empty">${esc(monthLabel(pm))} 입력을 불러오는 중입니다.</div>`; return }
+  if (!S.prev.length) { el.innerHTML = `<div class="empty">${esc(monthLabel(pm))} 입력 자료가 없어 비교할 수 없습니다.</div>`; return }
+  const add = (m, k, q) => m.set(k, (m.get(k) || 0) + q);
+  // 구역별 합계 (위 표)
+  const locRows = LOCS.map(l => {
+    const p = S.prev.filter(e => !e.del && e.loc === l.key).reduce((s, e) => s + Number(e.qty || 0), 0);
+    const c = active().filter(e => e.loc === l.key).reduce((s, e) => s + e.qty, 0);
+    return { l, p, c };
+  });
+  const tp = locRows.reduce((s, x) => s + x.p, 0), tc = locRows.reduce((s, x) => s + x.c, 0);
+  // 품목별 (고른 구역만)
+  const loc = S.cloc, cur = new Map(), pv = new Map();
+  for (const e of active()) if (e.r != null && (!loc || e.loc === loc)) add(cur, itemKey(e), e.qty);
+  for (const e of S.prev) if (!e.del && e.r != null && (!loc || e.loc === loc) && !isHidden(e)) add(pv, itemKey(e), Number(e.qty || 0));
+  const byKey = new Map(S.items.map(i => [itemKey(i), i]));
+  const words = S.cq.toLowerCase().replace(/×/g, "x").split(/\s+/).filter(Boolean);
+  const all = [...new Set([...cur.keys(), ...pv.keys()])].map(k => {
+    const it = byKey.get(k), [grp, spec, len] = k.split("|");
+    const p = pv.get(k) || 0, c = cur.get(k) || 0;
+    return { grp, label: `${spec}${len}`, hay: (it ? it.hay : `${grp} ${spec} ${len} ${spec}${len}`.toLowerCase().replace(/×/g, "x")), p, c, d: c - p, big: bigDiff(p, c) };
+  }).filter(x => !words.length || words.every(w => x.hay.includes(w)));
+  const rows = all.filter(x => S.cfilt === "all" || x.big).sort((a, b) => Math.abs(b.d) - Math.abs(a.d));
+  const sign = d => (d > 0 ? "+" : "") + fmtInt(d);
+  const ratio = x => x.p && x.c ? `${Math.round(x.c / x.p * 100)}%` : x.c ? "신규" : "없음";
+  el.innerHTML = `
+    <div class="tbl"><table>
+      <thead><tr><th>장소</th><th>${esc(monthLabel(pm))}</th><th>이번 달</th><th>차이</th></tr></thead>
+      <tbody>${locRows.map(x => `<tr><td>${x.l.name}</td><td>${fmtInt(x.p)}</td><td>${fmtInt(x.c)}</td><td>${sign(x.c - x.p)}</td></tr>`).join("")}</tbody>
+      <tfoot><tr><td>계</td><td>${fmtInt(tp)}</td><td>${fmtInt(tc)}</td><td>${sign(tc - tp)}</td></tr></tfoot>
+    </table></div>
+    <p class="cmpnote">입고·불출이 있어 전월과 다른 것은 당연합니다. 자릿수 실수처럼 크게 튄 값을 찾는 용도입니다.
+      '차이 큰 것' = 전월의 2배 이상·절반 이하, 이번에 새로 생겼거나 빠진 품목${loc ? "" : " (모든 장소 합계 기준)"}. ${all.filter(x => x.big).length}개 / 전체 ${all.length}개.</p>
+    ${rows.length ? `<div class="tbl"><table>
+      <thead><tr><th>품목${loc ? ` (${esc(locName(loc))})` : ""}</th><th>전월</th><th>이번</th><th>차이</th><th>비율</th></tr></thead>
+      <tbody>${rows.slice(0, 400).map(x => `<tr><td class="itm">${esc(x.label)}<small>${esc(x.grp)}</small></td><td>${x.p ? fmtInt(x.p) : "–"}</td><td>${x.c ? fmtInt(x.c) : "–"}</td><td class="${x.big ? "big" : ""}">${sign(x.d)}</td><td class="${x.big ? "big" : ""}">${ratio(x)}</td></tr>`).join("")}</tbody>
+    </table></div>` : `<div class="empty">${S.cfilt === "big" ? "차이가 큰 품목이 없습니다." : "조건에 맞는 품목이 없습니다."}</div>`}`;
 }
 function renderItems() {
   if (!S.cat) return;
@@ -539,10 +609,13 @@ function renderItems() {
     const hasHere = byItemLoc.has(`${it.r}|${S.loc}`);
     const here = byItemLoc.get(`${it.r}|${S.loc}`) || 0;
     const all = byItem.get(it.r) || 0;
+    // 지난달 수량은 이번 수량과 헷갈리지 않게 왼쪽 아래 줄에 따로 꼬리표로 보여주고, 크게 다르면 주황색으로
+    const pv = prevQty(it, S.loc);
+    const pvTag = pv == null ? "" : `<span class="pvtag${hasHere && bigDiff(pv, here) ? " big" : ""}">지난달 ${pv ? fmtInt(pv) : "없음"}</span>`;
     html += `<button class="item${hasHere ? " done" : ""}" data-row="${it.r}">
       <span class="spec">${esc(it.spec)}<span class="len">${it.len ?? ""}</span></span>
       <span class="qty${hasHere ? "" : " zero"}">${hasHere ? fmtInt(here) : "–"}<small>${all && all !== here ? "전체 " + fmtInt(all) : locName(S.loc)}</small></span>
-      <span class="meta">${esc(it.code || "코드 없음")} · ${it.uw ?? "-"} kg/m · 행 ${it.r}</span>
+      <span class="meta">${pvTag}${esc(it.code || "코드 없음")} · ${it.uw ?? "-"} kg/m · 행 ${it.r}</span>
     </button>`;
   }
   $("itemList").innerHTML = html + `</div></section>`;
@@ -662,11 +735,24 @@ function exprHtml() {
 }
 function resHtml() {
   const { val, num, ok } = sheetState();
-  if (!sheet.expr) return `${locName(sheet.loc)}에 저장됩니다`;
-  if (!num) return "식이 끝나지 않았습니다";
+  if (!sheet.expr) return `${locName(sheet.loc)}에 저장됩니다${cmpHtml(null)}`;
+  if (!num) return `식이 끝나지 않았습니다${cmpHtml(null)}`;
   const wt = sheet.it && ok ? ` · ${fmt(weightOf(sheet.it, val))} kg` : "";
   const dup = sheet.dup ? `<div class="dupwarn">${minsAgo(sheet.dup.ts)} 같은 품목·구역에 ${fmtInt(val)}本을 이미 저장했습니다. 한 번 더 누르면 또 저장됩니다.</div>` : "";
-  return `= <b>${fmtInt(val)}</b> 本${wt}${dup}`;
+  return `= <b>${fmtInt(val)}</b> 本${wt}${cmpHtml(val)}${dup}`;
+}
+/* 전월 비교: 이 구역에 이번 달 이미 넣은 수량 + 지금 값 을 지난달 이 구역 수량과 비교 (막지 않고 알려만 준다) */
+function cmpHtml(val) {
+  if (!sheet.it) return "";
+  const pv = prevQty(sheet.it, sheet.loc);
+  if (pv == null) return "";
+  const name = locName(sheet.loc);
+  const others = active().filter(e => e.r === sheet.it.r && e.loc === sheet.loc && (!sheet.editing || e.id !== sheet.editing.id)).reduce((s, e) => s + e.qty, 0);
+  if (val == null) return `<div class="cmpline">지난달 ${esc(name)} ${pv ? fmtInt(pv) + "本" : "없음"}${others ? ` · 이번 달 지금까지 ${fmtInt(others)}本` : ""}</div>`;
+  const tot = others + val, d = tot - pv, big = bigDiff(pv, tot);
+  if (!pv) return `<div class="cmpline big">지난달 ${esc(name)}에 없던 품목입니다. 맞는지 확인해 주세요.</div>`;
+  const how = !big ? "" : tot >= pv * 2 ? ` · 지난달의 ${(tot / pv).toFixed(1)}배, 확인해 주세요` : ` · 지난달의 ${Math.round(tot / pv * 100)}%, 확인해 주세요`;
+  return `<div class="cmpline${big ? " big" : ""}">지난달 ${fmtInt(pv)} → 저장하면 ${others ? "합계 " : ""}${fmtInt(tot)} (${d >= 0 ? "+" : ""}${fmtInt(d)})${how}</div>`;
 }
 /* 두 번 누름 방지: 10분 안에 내가 같은 품목·구역·수량을 저장한 기록 */
 const DUP_MS = 10 * 60 * 1000;
@@ -808,6 +894,9 @@ document.addEventListener("click", ev => {
   if (t.id === "af-done" || t.id === "af-all") {
     S.allFilt = t.id.slice(3); ["done", "all"].forEach(f => $("af-" + f).setAttribute("aria-pressed", S.allFilt === f)); renderAllItems(); return
   }
+  if (t.id === "cf-big" || t.id === "cf-all") {
+    S.cfilt = t.id.slice(3); ["big", "all"].forEach(f => $("cf-" + f).setAttribute("aria-pressed", S.cfilt === f)); renderCmp(); return
+  }
   if (t.id === "lockBtn") { openDlg("lock", S.loc); return }
   if (t.id === "unlockBtn") { openDlg("unlock", S.loc); return }
   if (t.id === "showDelA") { S.showDelA = !S.showDelA; t.setAttribute("aria-pressed", S.showDelA); renderAllLog(); return }
@@ -845,12 +934,14 @@ document.addEventListener("input", ev => {
   if (ev.target.id === "lq") { S.lq = ev.target.value; renderLog() }
   if (ev.target.id === "aq") { S.aq = ev.target.value; renderAllLog() }
   if (ev.target.id === "iq") { S.iq = ev.target.value; renderAllItems() }
+  if (ev.target.id === "cq") { S.cq = ev.target.value; renderCmp() }
   if (ev.target.id === "cname" && sheet) { sheet.cname = ev.target.value; sheet.dup = null; updateDisplay() }
 });
 document.addEventListener("change", ev => {
   if (ev.target.id === "grpSel") { S.grp = ev.target.value; renderItems() }
   if (ev.target.id === "monthSel") setMonth(ev.target.value).catch(() => toast("품목 목록을 불러오지 못했습니다. 새로고침해 주세요."));
   if (ev.target.id === "lloc") { S.lloc = ev.target.value; renderAllLog() }
+  if (ev.target.id === "cloc") { S.cloc = ev.target.value; renderCmp() }
 });
 document.addEventListener("keydown", ev => {
   if (dlg) { if (ev.key === "Enter") { ev.preventDefault(); submitDlg() } else if (ev.key === "Escape") closeDlg(); return }
@@ -890,11 +981,13 @@ if ("serviceWorker" in navigator && location.protocol === "https:") {
   if (!LOCS.some(l => l.key === S.loc)) S.loc = "I";
   S.me = store.get("rm-name", ""); S.code = store.get("rm-code", ""); S.admin = store.get("rm-admin", "");
   $("lloc").insertAdjacentHTML("beforeend", LOCS.map(l => `<option value="${l.key}">${l.name}</option>`).join(""));
+  $("cloc").insertAdjacentHTML("beforeend", LOCS.map(l => `<option value="${l.key}">${l.name}</option>`).join(""));
   try { await loadCatalogs() } catch { $("itemList").innerHTML = `<div class="empty">품목 목록을 불러오지 못했습니다. 통신을 확인하고 새로고침해 주세요.</div>`; return }
   S.server = store.get("rm-cache-" + S.month, []);
   S.locks = store.get("rm-locks-" + S.month, {});
   S.mgrs = store.get("rm-mgrs-" + S.month, {});
   merge(); renderAll();
+  setPrev(addMonth(S.month, -1), store.get("rm-cache-" + addMonth(S.month, -1), null));
   if (!S.me || !S.code) openSetup();
-  else { flush(); refresh() }
+  else { flush(); refresh(); loadPrev() }
 })();
