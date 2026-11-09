@@ -24,9 +24,13 @@ const S = {
   server: [], entries: [], loaded: false, online: null, syncedAt: null, sig: "",
   loc: "I", tab: "input", q: "", grp: "", filt: "all", lq: "", showDel: false,
   allView: "items", iq: "", allFilt: "done", aq: "", lloc: "", showDelA: false,
-  locks: {}, me: "", code: "", outbox: [], rejected: [], sending: false,
+  locks: {}, mgrs: {}, admin: "", me: "", code: "", outbox: [], rejected: [], sending: false,
 };
 const isLocked = loc => !!S.locks[loc];
+/* 권한: 구역 담당자는 그 구역 입력·잠금과 자기 기록 수정·삭제, 관리자는 전부 (구글 시트 쪽에서도 같은 규칙으로 막는다) */
+const mgrsOf = loc => S.mgrs[loc] || [];
+const isMgr = loc => !!S.me && mgrsOf(loc).includes(S.me);
+const canWrite = loc => !!S.admin || isMgr(loc);
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const fmt = n => (Math.round(n * 10) / 10).toLocaleString("ko-KR");
@@ -114,6 +118,7 @@ async function setMonth(m) {
   if (S.cat?.month !== c.month) await loadCatalog(c);
   S.server = store.get("rm-cache-" + m, []);
   S.locks = store.get("rm-locks-" + m, {});
+  S.mgrs = store.get("rm-mgrs-" + m, {});
   S.loaded = S.server.length > 0; S.sig = "";
   merge(); renderAll();
   refresh();
@@ -146,7 +151,8 @@ async function apiGet(params) {
 }
 async function apiPost(body) {
   // text/plain 으로 보내야 브라우저가 사전 확인 요청 없이 Apps Script에 바로 보낸다
-  const r = await fetch(API, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ ...body, code: S.code }) });
+  // 관리자 모드면 관리자 코드를 같이 보낸다 (body 에 admin 이 있으면 그것을 쓴다)
+  const r = await fetch(API, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ admin: S.admin || undefined, ...body, code: S.code }) });
   return r.json();
 }
 
@@ -164,7 +170,7 @@ function merge() {
 /* 데이터가 바뀌었을 때만 다시 그린다 (주기적으로 새로 받아도 화면이 깜빡이지 않게) */
 function mergeAndRender(force) {
   merge();
-  const sig = JSON.stringify([S.entries, S.locks]);
+  const sig = JSON.stringify([S.entries, S.locks, S.mgrs, S.me, S.admin]);
   if (force || sig !== S.sig) { S.sig = sig; renderAll() } else { renderBanners(); renderSync() }
 }
 
@@ -177,8 +183,10 @@ async function refresh() {
     if (month !== S.month) return;
     S.server = j.entries || [];
     S.locks = j.locks || {};
+    S.mgrs = j.mgrs || {};
     store.set("rm-cache-" + month, S.server);
     store.set("rm-locks-" + month, S.locks);
+    store.set("rm-mgrs-" + month, S.mgrs);
     S.online = true; S.syncedAt = new Date(); S.loaded = true;
   } catch { S.online = false; S.loaded = true }
   mergeAndRender();
@@ -207,8 +215,11 @@ async function flush() {
           : await apiPost({ action: "del", id: op.id, by: op.by });
       } catch { failed = true; break }  // 통신 실패: 대기열에 그대로 두고 다음에 다시 보낸다
       if (j.ok === false && j.error === "code") { failed = true; openSetup("현장 코드가 바뀌었습니다. 새 코드를 입력해 주세요."); break }
-      // 보내는 사이 다른 사람이 구역을 잠갔으면 버리지 않고 따로 보관한다 (잠금 해제 후 다시 보내기)
+      // 관리자 코드가 바뀌었으면 관리자 모드를 끄고 같은 건을 일반 권한으로 다시 보낸다
+      if (j.ok === false && (j.error === "admin" || j.error === "noadmin") && S.admin) { adminOff("관리자 코드가 맞지 않아 관리자 모드를 껐습니다"); continue }
+      // 보내는 사이 구역이 잠겼거나 담당자가 바뀌었으면 버리지 않고 따로 보관한다 (해결 후 다시 보내기)
       if (j.ok === false && j.error === "locked") { S.rejected.push(op); toast("잠긴 구역이라 저장하지 못한 입력이 있습니다") }
+      else if (j.ok === false && j.error === "notmgr") { S.rejected.push(op); toast("담당 구역이 아니라 저장하지 못한 입력이 있습니다") }
       else if (j.ok === false && j.error === "owner") toast("다른 사람이 입력한 기록은 수정·삭제할 수 없습니다");
       else if (j.ok === false) toast(`한 건을 저장하지 못했습니다 (${j.error}). 입력 내역을 확인해 주세요.`);
       S.outbox.shift(); saveOutbox(); sent++;
@@ -232,52 +243,111 @@ function deleteEntry(e) {
   toast("삭제했습니다 (기록은 남습니다)");
 }
 
-/* ---------- 구역 잠금 ---------- */
-/* 잠금·해제는 대기열에 두지 않고 바로 보낸다 (통신이 될 때만) */
+/* ---------- 구역 잠금·관리자 모드·담당자 지정 (대화창) ---------- */
+/* 대기열에 두지 않고 바로 보낸다 (통신이 될 때만) */
 let dlg = null;
 function openDlg(kind, loc) { dlg = { kind, loc, err: "", busy: false }; drawDlg() }
 function closeDlg() { dlg = null; $("dlgRoot").innerHTML = "" }
+function adminOff(msg) {
+  S.admin = ""; store.set("rm-admin", "");
+  if (msg) toast(msg);
+  mergeAndRender(true);
+}
+/* 담당자 칸: 지금 화면에 있는 값을 지키면서 다시 그린다 */
+function mgrInputs() {
+  const v = {};
+  LOCS.forEach(l => { const el = $("mgr-" + l.key); if (el) v[l.key] = el.value });
+  return v;
+}
 function drawDlg() {
   if (!dlg) return;
   const name = locName(dlg.loc);
   const n = active().filter(e => e.loc === dlg.loc).length;
-  const body = dlg.kind === "lock"
-    ? `<h2>${esc(name)} 입력을 마칠까요?</h2>
-       <p>잠그면 ${esc(S.month ? monthLabel(S.month) : "")} ${esc(name)}에는 누구도 입력·수정·삭제할 수 없습니다. 지금까지 입력 ${n}건은 그대로 남습니다.</p>
-       <p>다시 고치려면 잠금 해제 코드가 필요합니다.</p>`
-    : `<h2>${esc(name)} 잠금 해제</h2>
-       <p>잠금 해제 코드를 넣으면 다시 입력·수정·삭제할 수 있습니다.</p>
-       <input id="unlockCode" type="password" inputmode="numeric" maxlength="12" placeholder="잠금 해제 코드" autocomplete="off">`;
+  const mon = S.month ? monthLabel(S.month) : "";
+  let body, okLabel;
+  if (dlg.kind === "lock") {
+    body = `<h2>${esc(name)} 입력을 마칠까요?</h2>
+       <p>잠그면 ${esc(mon)} ${esc(name)}에는 누구도 입력·수정·삭제할 수 없습니다. 지금까지 입력 ${n}건은 그대로 남습니다.</p>
+       <p>다시 고치려면 관리자가 잠금을 풀어야 합니다.</p>`;
+    okLabel = "잠그기";
+  } else if (dlg.kind === "unlock") {
+    body = `<h2>${esc(name)} 잠금 해제</h2><p>풀면 ${esc(name)} 담당자가 다시 입력·수정·삭제할 수 있습니다.</p>`;
+    okLabel = "잠금 해제";
+  } else if (dlg.kind === "admin") {
+    body = `<h2>관리자 모드</h2><p>관리자 코드를 넣으면 모든 구역에 입력·수정·삭제하고, 잠금·해제와 구역 담당자 지정을 할 수 있습니다.</p>
+       <input id="adminCode" type="password" inputmode="numeric" maxlength="12" placeholder="관리자 코드" autocomplete="off">`;
+    okLabel = "켜기";
+  } else {
+    const v = dlg.vals || Object.fromEntries(LOCS.map(l => [l.key, mgrsOf(l.key).join(", ")]));
+    body = `<h2>${esc(mon)} 구역 담당자</h2>
+       <p>담당자만 그 구역에 입력하고, 자기가 넣은 기록을 수정·삭제하고, 구역을 잠글 수 있습니다. 비워 둔 구역은 관리자만 입력합니다.</p>
+       <p>앱에 등록한 이름과 똑같이 쓰고, 여러 명이면 쉼표(,)로 나눕니다.</p>
+       <div class="dlg-body">${LOCS.map(l => `<div class="mgr-row"><label for="mgr-${l.key}">${l.name}</label><input id="mgr-${l.key}" value="${esc(v[l.key] || "")}" placeholder="예: 김명언, 김윤석" autocomplete="off"></div>`).join("")}</div>
+       <button class="linkbtn" data-dlg="prev">지난달 담당자 불러오기</button>`;
+    okLabel = "저장";
+  }
   $("dlgRoot").innerHTML = `
     <div class="scrim" data-dlg="close"></div>
     <div class="dlg" role="dialog" aria-modal="true">
       ${body}
       <div class="err">${esc(dlg.err)}</div>
       <div class="dlg-btns"><button class="btn ghost" data-dlg="close">취소</button>
-        <button class="btn" data-dlg="ok" ${dlg.busy ? "disabled" : ""}>${dlg.busy ? "처리 중…" : dlg.kind === "lock" ? "잠그기" : "잠금 해제"}</button></div>
+        <button class="btn" data-dlg="ok" ${dlg.busy ? "disabled" : ""}>${dlg.busy ? "처리 중…" : okLabel}</button></div>
     </div>`;
-  $("unlockCode")?.focus();
+  $("adminCode")?.focus();
+}
+const DLG_ERR = {
+  admin: "관리자 코드가 맞지 않습니다.", noadmin: "관리자 코드가 아직 설정되지 않았습니다. 구글 시트 스크립트 속성에 ADMIN_CODE를 넣어 주세요.",
+  notmgr: "이 구역 담당자만 할 수 있습니다.", action: "저장소가 아직 새 버전이 아닙니다. 관리자에게 문의해 주세요.",
+};
+async function loadPrevMgrs() {
+  if (!dlg || dlg.busy) return;
+  const prev = addMonth(S.month, -1);
+  dlg.vals = mgrInputs(); dlg.busy = true; drawDlg();
+  try {
+    const j = await apiGet({ action: "mgrs", month: prev });
+    if (!dlg) return;
+    const m = j.mgrs || {};
+    if (!Object.keys(m).length) dlg.err = `${monthLabel(prev)} 담당자가 없습니다.`;
+    else { dlg.vals = Object.fromEntries(LOCS.map(l => [l.key, (m[l.key] || []).join(", ")])); dlg.err = "" }
+  } catch { if (dlg) dlg.err = "통신이 안 됩니다." }
+  if (dlg) { dlg.busy = false; drawDlg() }
 }
 async function submitDlg() {
   if (!dlg || dlg.busy) return;
-  const unlock = ($("unlockCode")?.value || "").trim();
-  if (dlg.kind === "unlock" && !unlock) { dlg.err = "코드를 넣어 주세요."; drawDlg(); return }
-  if (S.outbox.length) { dlg.err = "아직 보내지 못한 입력이 있습니다. 먼저 보낸 뒤 다시 해 주세요."; drawDlg(); flush(); return }
-  dlg.busy = true; dlg.err = ""; drawDlg();
   const { kind, loc } = dlg;
+  let body;
+  if (kind === "admin") {
+    const code = ($("adminCode")?.value || "").trim();
+    if (!code) { dlg.err = "코드를 넣어 주세요."; drawDlg(); return }
+    body = { action: "admin", admin: code };
+  } else if (kind === "mgrs") {
+    dlg.vals = mgrInputs();
+    const mgrs = Object.fromEntries(LOCS.map(l => [l.key, [...new Set(String(dlg.vals[l.key] || "").split(/[,，]/).map(s => s.trim()).filter(Boolean))]]));
+    body = { action: "setmgrs", month: S.month, mgrs, by: S.me };
+  } else {
+    if (S.outbox.length) { dlg.err = "아직 보내지 못한 입력이 있습니다. 먼저 보낸 뒤 다시 해 주세요."; drawDlg(); flush(); return }
+    body = { action: kind, month: S.month, loc, by: S.me };
+  }
+  dlg.busy = true; dlg.err = ""; drawDlg();
   let j;
-  try { j = await apiPost({ action: kind, month: S.month, loc, by: S.me, unlock }) }
+  try { j = await apiPost(body) }
   catch { if (dlg) { dlg.busy = false; dlg.err = "통신이 안 됩니다. 연결된 곳에서 다시 해 주세요."; drawDlg() } return }
   if (!dlg) return;
   dlg.busy = false;
   if (j.ok === false) {
-    dlg.err = { unlock: "잠금 해제 코드가 맞지 않습니다.", nounlock: "잠금 해제 코드가 아직 설정되지 않았습니다. 담당자에게 문의해 주세요.",
-      action: "저장소가 아직 새 버전이 아닙니다. 담당자에게 문의해 주세요." }[j.error] || `처리하지 못했습니다 (${j.error}).`;
+    dlg.err = DLG_ERR[j.error] || `처리하지 못했습니다 (${j.error}).`;
+    if (kind !== "admin" && (j.error === "admin" || j.error === "noadmin") && S.admin) adminOff();
     drawDlg(); return
+  }
+  closeDlg();
+  if (kind === "admin") { S.admin = body.admin; store.set("rm-admin", S.admin); toast("관리자 모드를 켰습니다"); mergeAndRender(true); return }
+  if (kind === "mgrs") {
+    S.mgrs = j.mgrs || {}; store.set("rm-mgrs-" + S.month, S.mgrs);
+    toast("구역 담당자를 저장했습니다"); mergeAndRender(true); refresh(); return
   }
   S.locks = j.locks || S.locks;
   store.set("rm-locks-" + S.month, S.locks);
-  closeDlg();
   toast(kind === "lock" ? `${locName(loc)}을(를) 잠갔습니다` : `${locName(loc)} 잠금을 풀었습니다`);
   mergeAndRender(true);
   if (kind === "unlock" && S.rejected.some(op => opLoc(op) === loc)) toast("잠금 전에 저장하지 못한 입력이 있습니다. 위 안내에서 다시 보내기를 눌러 주세요.");
@@ -315,6 +385,7 @@ $("setupForm").addEventListener("submit", async ev => {
 /* ---------- 화면 ---------- */
 function renderAll() { renderLocBar(); renderBanners(); renderSync(); renderTab(); if (sheet && !sheet.dirty) drawPrev() }
 function renderSync() {
+  $("admBadge").hidden = !S.admin;
   const el = $("sync");
   if (!API) { el.textContent = "저장소 미설정"; el.className = "sync off"; return }
   if (S.online === false) { el.textContent = "오프라인"; el.className = "sync off"; return }
@@ -333,15 +404,16 @@ function renderBanners() {
   const b = [];
   if (!API) b.push(`<div class="banner warn"><span>저장소 주소가 설정되지 않았습니다. 지금 입력은 이 폰에만 보관됩니다.</span></div>`);
   else if (S.outbox.length) b.push(`<div class="banner warn"><span>아직 보내지 못한 입력 ${S.outbox.length}건 (이 폰에 보관 중, 연결되면 자동 전송)</span><button id="retry">지금 보내기</button></div>`);
-  if (S.rejected.length) b.push(`<div class="banner warn"><span>잠긴 구역이라 저장하지 못한 입력 ${S.rejected.length}건 (${[...new Set(S.rejected.map(op => locName(opLoc(op))))].join(", ")}). 잠금을 푼 뒤 다시 보내세요.</span><button id="resend">다시 보내기</button><button id="dropRej">${S.dropRej ? "버리기 확인" : "버리기"}</button></div>`);
+  if (S.rejected.length) b.push(`<div class="banner warn"><span>잠긴 구역이거나 담당 구역이 아니라 저장하지 못한 입력 ${S.rejected.length}건 (${[...new Set(S.rejected.map(op => locName(opLoc(op))))].join(", ")}). 잠금 해제·담당자 지정 후 다시 보내세요.</span><button id="resend">다시 보내기</button><button id="dropRej">${S.dropRej ? "버리기 확인" : "버리기"}</button></div>`);
   $("banners").innerHTML = b.join("");
 }
 /* 입력·입력 내역 탭 위의 구역 잠금 줄 */
+const mgrText = loc => mgrsOf(loc).length ? `담당 ${mgrsOf(loc).join(", ")}` : "담당자 미지정";
 function renderLockBar() {
   const name = locName(S.loc), lk = S.locks[S.loc];
   const html = lk
-    ? `<div class="lockbar locked"><span>${LOCK_SVG}<b>${esc(name)} 잠김</b> · ${esc(whoName(lk.by))} ${fmtTime(lk.at)} · 입력·수정·삭제 불가</span><button id="unlockBtn">잠금 해제</button></div>`
-    : `<div class="lockbar"><span>${esc(name)} 입력 ${active().filter(e => e.loc === S.loc).length}건</span><button id="lockBtn">입력 완료 · 잠그기</button></div>`;
+    ? `<div class="lockbar locked"><span>${LOCK_SVG}<b>${esc(name)} 잠김</b> · ${esc(whoName(lk.by))} ${fmtTime(lk.at)} · 입력·수정·삭제 불가${S.admin ? "" : " (해제는 관리자)"}</span>${S.admin ? `<button id="unlockBtn">잠금 해제</button>` : ""}</div>`
+    : `<div class="lockbar"><span>${esc(name)} 입력 ${active().filter(e => e.loc === S.loc).length}건 · ${esc(mgrText(S.loc))}${canWrite(S.loc) ? "" : " · 보기만 가능"}</span>${canWrite(S.loc) ? `<button id="lockBtn">입력 완료 · 잠그기</button>` : ""}</div>`;
   $("lockBar1").innerHTML = html; $("lockBar2").innerHTML = html;
 }
 function renderTab() {
@@ -469,9 +541,9 @@ function renderSum() {
   const nLocked = LOCS.filter(l => isLocked(l.key)).length;
   $("sumView").innerHTML = `
     <div class="tbl"><table>
-      <thead><tr><th>장소</th><th>입력 건</th><th>품목 수</th><th>수량(本)</th><th>중량(kg)</th><th>상태</th></tr></thead>
-      <tbody>${per.map(p => `<tr><td>${p.l.name}</td><td class="num">${p.n}</td><td class="num">${p.items}</td><td class="num">${fmtInt(p.qty)}</td><td class="num">${fmt(p.wt)}</td><td>${isLocked(p.l.key) ? `<span class="tag lk">${LOCK_SVG}잠김</span>` : `<span class="tag">입력 중</span>`}</td></tr>`).join("")}</tbody>
-      <tfoot><tr><td>계</td><td class="num">${tot.n}</td><td class="num">${touched}</td><td class="num">${fmtInt(tot.qty)}</td><td class="num">${fmt(tot.wt)}</td><td>${nLocked}/${LOCS.length} 잠김</td></tr></tfoot>
+      <thead><tr><th>장소</th><th>담당자</th><th>입력 건</th><th>품목 수</th><th>수량(本)</th><th>중량(kg)</th><th>상태</th></tr></thead>
+      <tbody>${per.map(p => `<tr><td>${p.l.name}</td><td>${esc(mgrsOf(p.l.key).join(", ") || "-")}</td><td class="num">${p.n}</td><td class="num">${p.items}</td><td class="num">${fmtInt(p.qty)}</td><td class="num">${fmt(p.wt)}</td><td>${isLocked(p.l.key) ? `<span class="tag lk">${LOCK_SVG}잠김</span>` : `<span class="tag">입력 중</span>`}</td></tr>`).join("")}</tbody>
+      <tfoot><tr><td>계</td><td></td><td class="num">${tot.n}</td><td class="num">${touched}</td><td class="num">${fmtInt(tot.qty)}</td><td class="num">${fmt(tot.wt)}</td><td>${nLocked}/${LOCS.length} 잠김</td></tr></tfoot>
     </table></div>
     <div class="card">
       <h2>PC 엑셀에 반영하기</h2>
@@ -479,10 +551,19 @@ function renderSum() {
       <p>품목 목록: ${esc(monthLabel(S.cat.month))} 집계표 기준${S.cat.month !== S.month ? " (그달 집계표가 아직 없어 이전 달 목록을 씁니다)" : ""}.</p>
       <p>전체 품목 ${S.items.length}개 중 ${touched}개 입력됨${customs ? ` · 추가품목 ${customs}건(별도 시트로 정리)` : ""}.</p>
     </div>
+    ${S.admin ? `<div class="card">
+      <h2>관리자</h2>
+      <p>${esc(monthLabel(S.month))} 구역 담당자를 정합니다. 담당자는 달마다 따로 정하고, 정하지 않은 구역은 관리자만 입력합니다.</p>
+      <button class="btn" id="mgrBtn">구역 담당자 지정</button>
+      <button class="btn ghost" id="adminOffBtn">관리자 모드 끄기</button>
+    </div>` : ""}
     <div class="card">
       <h2>이 폰 설정</h2>
-      <p>입력자: <b>${esc(S.me || "-")}</b> · 수정·삭제는 이 이름으로 입력한 기록만 할 수 있습니다.</p>
+      <p>입력자: <b>${esc(S.me || "-")}</b>${S.admin ? " · <b>관리자 모드</b>" : ""}</p>
+      <p>${S.admin ? "모든 구역에 입력·수정·삭제하고 잠금·해제할 수 있습니다."
+        : (() => { const mine = LOCS.filter(l => isMgr(l.key)).map(l => l.name); return mine.length ? `담당 구역: <b>${esc(mine.join(", "))}</b> · 담당 구역에 입력하고, 내가 넣은 기록만 수정·삭제할 수 있습니다.` : "이번 달 담당 구역이 없습니다. 담당자 목록의 이름과 위 입력자 이름이 똑같아야 합니다." })()}</p>
       <button class="btn ghost" id="openSetup">이름·현장 코드 바꾸기</button>
+      ${S.admin ? "" : `<button class="btn ghost" id="adminBtn">관리자 모드</button>`}
     </div>`;
 }
 
@@ -527,10 +608,19 @@ function prevHtml() {
   return `<h3>이 품목에 입력된 기록 (모든 장소)</h3>${prev.map(e => `
     <div class="prow"><span class="tag">${isLocked(e.loc) ? LOCK_SVG : ""}${esc(locName(e.loc))}</span><span class="e">${esc(e.expr)} = ${fmtInt(e.qty)}${e.memo ? ` · ${esc(e.memo)}` : ""} · ${esc(whoName(e.by))}</span>
     <span class="acts">${canChange(e) ? `<button data-edit="${e.id}">수정</button>${sheet.confirmDel === e.id ? `<button class="danger" data-delok="${e.id}">삭제 확인</button>` : `<button data-del="${e.id}">삭제</button>`}`
-      : `<span class="why">${isLocked(e.loc) ? "잠김" : "입력자만 수정"}</span>`}</span></div>`).join("")}`;
+      : `<span class="why">${isLocked(e.loc) ? "잠김" : !isMgr(e.loc) ? "담당자만" : "입력자만 수정"}</span>`}</span></div>`).join("")}`;
 }
-/* 수정·삭제: 잠기지 않은 구역의, 내가 입력한 기록만 */
-const canChange = e => !isLocked(e.loc) && !!S.me && e.by === S.me;
+/* 수정·삭제: 잠기지 않은 구역에서, 관리자는 전부, 담당자는 자기가 입력한 기록만 */
+const canChange = e => !isLocked(e.loc) && (!!S.admin || (isMgr(e.loc) && e.by === S.me));
+/* 입력 창에서 키패드 대신 보여줄 안내 (잠김·담당 아님) */
+function blockHtml(loc) {
+  const name = esc(locName(loc));
+  if (isLocked(loc)) return `<div class="lockbar locked"><span>${LOCK_SVG}<b>${name}</b>은(는) 입력을 마치고 잠근 구역입니다. 고치려면 관리자가 잠금을 풀어야 합니다.</span></div>`;
+  if (canWrite(loc)) return "";
+  return `<div class="lockbar locked"><span>${mgrsOf(loc).length
+    ? `<b>${name}</b>은(는) ${esc(mgrsOf(loc).join(", "))}만 입력할 수 있습니다. (내 이름: ${esc(whoName(S.me))})`
+    : `<b>${name}</b>은(는) 아직 담당자가 정해지지 않았습니다. 관리자에게 담당자 지정을 요청해 주세요.`}</span></div>`;
+}
 /* 다른 사람이 같은 품목을 입력하면 아래 기록 목록만 새로 고친다 */
 function drawPrev() { const el = $("prevBox"); if (el) el.innerHTML = prevHtml() }
 function drawSheet() {
@@ -548,7 +638,7 @@ function drawSheet() {
       <div class="sheet-head"><div>${head}</div><button class="x" data-act="close" aria-label="닫기">✕</button></div>
       ${sheet.custom ? `<div class="custom-fields"><input id="cname" placeholder="품명·규격 (예: ONE SHEET 63.5×480×)" value="${esc(sheet.cname)}"><input id="clen" inputmode="numeric" placeholder="길이(mm)" value="${esc(sheet.clen)}"></div>` : ""}
       <div class="locs">${LOCS.map(l => `<button class="loc${isLocked(l.key) ? " locked" : ""}" data-sloc="${l.key}" aria-pressed="${sheet.loc === l.key}">${isLocked(l.key) ? LOCK_SVG : ""}${l.name}</button>`).join("")}</div>
-      ${isLocked(sheet.loc) ? `<div class="lockbar locked"><span>${LOCK_SVG}<b>${esc(locName(sheet.loc))}</b>은(는) 입력을 마치고 잠근 구역입니다. 고치려면 잠금을 먼저 풀어야 합니다.</span></div>` : `
+      ${blockHtml(sheet.loc) || `
       ${sheet.editing ? `<div class="editing"><span>기존 입력 수정 중 (이전 값 ${esc(sheet.editing.expr)})</span><button data-act="canceledit">새로 입력으로</button></div>` : ""}
       <div class="display${sheet.expr && !num ? " bad" : ""}" id="disp">
         <div class="expr" id="dexpr">${exprHtml()}</div>
@@ -565,7 +655,7 @@ function drawSheet() {
     </div>`;
 }
 function press(k) {
-  if (isLocked(sheet.loc)) return;
+  if (isLocked(sheet.loc) || !canWrite(sheet.loc)) return;
   let s = sheet.expr;
   if (k === "back") s = s.slice(0, -1);
   else if (k === "clear") s = "";
@@ -576,6 +666,7 @@ function press(k) {
 }
 function saveSheet() {
   if (isLocked(sheet.loc)) { toast("잠긴 구역에는 저장할 수 없습니다"); return }
+  if (!canWrite(sheet.loc)) { toast("이 구역 담당자만 입력할 수 있습니다"); return }
   if (sheet.editing && !canChange(sheet.editing)) { toast("이 기록은 수정할 수 없습니다"); return }
   const val = evalExpr(sheet.expr);
   if (typeof val !== "number" || isNaN(val)) return;
@@ -608,7 +699,10 @@ function toast(msg) {
 document.addEventListener("click", ev => {
   const t = ev.target.closest("button, [data-act]");
   if (!t) return;
-  if (t.dataset.dlg) { t.dataset.dlg === "ok" ? submitDlg() : closeDlg(); return }
+  if (t.dataset.dlg) { t.dataset.dlg === "ok" ? submitDlg() : t.dataset.dlg === "prev" ? loadPrevMgrs() : closeDlg(); return }
+  if (t.id === "adminBtn") { openDlg("admin"); return }
+  if (t.id === "adminOffBtn") { adminOff("관리자 모드를 껐습니다"); return }
+  if (t.id === "mgrBtn") { openDlg("mgrs"); return }
   if (t.dataset.loc) { S.loc = t.dataset.loc; store.set("rm-loc", S.loc); renderLocBar(); renderTab(); return }
   if (t.classList.contains("tab")) { S.tab = t.id.slice(4); renderLocBar(); renderTab(); return }
   if (t.id.startsWith("seg-")) { S.allView = t.id.slice(4); renderTab(); return }
@@ -695,11 +789,12 @@ if ("serviceWorker" in navigator && location.protocol === "https:") {
 (async function start() {
   S.loc = store.get("rm-loc", "I");
   if (!LOCS.some(l => l.key === S.loc)) S.loc = "I";
-  S.me = store.get("rm-name", ""); S.code = store.get("rm-code", "");
+  S.me = store.get("rm-name", ""); S.code = store.get("rm-code", ""); S.admin = store.get("rm-admin", "");
   $("lloc").insertAdjacentHTML("beforeend", LOCS.map(l => `<option value="${l.key}">${l.name}</option>`).join(""));
   try { await loadCatalogs() } catch { $("itemList").innerHTML = `<div class="empty">품목 목록을 불러오지 못했습니다. 통신을 확인하고 새로고침해 주세요.</div>`; return }
   S.server = store.get("rm-cache-" + S.month, []);
   S.locks = store.get("rm-locks-" + S.month, {});
+  S.mgrs = store.get("rm-mgrs-" + S.month, {});
   merge(); renderAll();
   if (!S.me || !S.code) openSetup();
   else { flush(); refresh() }
