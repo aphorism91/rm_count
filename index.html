@@ -177,6 +177,20 @@ tfoot td { font-weight: 700 }
 .setup input { border: 1px solid var(--line); background: var(--bg); color: var(--fg); border-radius: 8px; padding: 11px 12px; font: inherit; font-size: 16px }
 .setup .err { color: var(--danger); font-size: 13.5px; min-height: 1em }
 .setup .btn { padding: 12px }
+.setup [hidden] { display: none }
+.set-title { font-size: 13px; font-weight: 700; margin-bottom: 6px }
+.set-title small { color: var(--muted); font-weight: 400 }
+.names { display: flex; flex-direction: column; gap: 6px; max-height: 46vh; overflow: auto }
+.nm { display: flex; justify-content: space-between; align-items: center; gap: 8px; text-align: left; border: 1px solid var(--line); background: var(--bg); color: var(--fg); border-radius: 8px; padding: 10px 12px; font: inherit; font-size: 15px; font-weight: 700 }
+.nm small { color: var(--muted); font-weight: 400; font-size: 12px }
+.nm[aria-pressed="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; color: var(--accent) }
+.nm.other { font-weight: 400; color: var(--muted) }
+.linkbtn { align-self: center; border: none; background: none; color: var(--accent); font-size: 13px; padding: 2px 0; text-decoration: underline }
+.miss { display: flex; flex-direction: column; gap: 4px; max-height: 38vh; overflow: auto; border: 1px solid var(--line); border-radius: 8px; padding: 6px }
+.miss button { display: flex; justify-content: space-between; gap: 8px; text-align: left; border: none; background: var(--bg); color: var(--fg); border-radius: 6px; padding: 7px 8px; font: inherit; font-size: 13.5px }
+.miss button small { color: var(--muted); white-space: nowrap }
+.dlg .ok { color: var(--accent) }
+.dupwarn { color: var(--warn); font-size: 13px; font-weight: 700 }
 .sync { font-size: 11.5px; color: var(--muted); font-family: var(--font-num) }
 .sync.off { color: var(--warn) }
 .adm { font-size: 11px; font-weight: 700; color: var(--surface); background: var(--accent); border-radius: 4px; padding: 2px 6px }
@@ -294,10 +308,15 @@ tfoot td { font-weight: 700 }
   <form id="setupForm" autocomplete="off">
     <h2>진천2 원자재 실사</h2>
     <p>처음 한 번만 입력하면 이 폰에 기억됩니다. 입력 기록에 이름이 함께 남습니다.</p>
-    <label>이름<input id="setName" maxlength="20" placeholder="예: 김민수" required></label>
-    <label>현장 코드<input id="setCode" inputmode="numeric" maxlength="12" placeholder="담당자에게 받은 숫자" required></label>
+    <div id="setStep1"><label>현장 코드<input id="setCode" inputmode="numeric" maxlength="12" placeholder="관리자에게 받은 숫자"></label></div>
+    <div id="setStep2" hidden>
+      <div class="set-title">내 이름을 고르세요 <small id="setMon"></small></div>
+      <div class="names" id="setNames"></div>
+      <label id="setNameWrap" hidden>이름 직접 입력<input id="setName" maxlength="20" placeholder="예: 김민수"></label>
+    </div>
     <div class="err" id="setErr"></div>
-    <button class="btn" type="submit" id="setBtn">시작하기</button>
+    <button class="btn" type="submit" id="setBtn">다음</button>
+    <button class="linkbtn" type="button" id="setBack" hidden>현장 코드 다시 입력</button>
   </form>
 </div>
 <script src="config.js"></script>

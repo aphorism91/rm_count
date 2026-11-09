@@ -246,7 +246,34 @@ function deleteEntry(e) {
 /* ---------- 구역 잠금·관리자 모드·담당자 지정 (대화창) ---------- */
 /* 대기열에 두지 않고 바로 보낸다 (통신이 될 때만) */
 let dlg = null;
-function openDlg(kind, loc) { dlg = { kind, loc, err: "", busy: false }; drawDlg() }
+function openDlg(kind, loc) { dlg = { kind, loc, err: "", busy: false }; drawDlg(); if (kind === "lock") loadMiss(loc) }
+/* 잠그기 전 확인: 지난달 이 구역에 있었는데 이번 달에 아직 안 넣은 품목 (규격·길이로 맞춘다) */
+const itemKey = e => `${e.grp}|${e.spec}|${e.len ?? ""}`;
+async function loadMiss(loc) {
+  const prev = addMonth(S.month, -1);
+  let list = null;
+  try {
+    const j = await apiGet({ action: "list", month: prev });
+    if (j.ok !== false) { list = j.entries || []; store.set("rm-cache-" + prev, list) }
+  } catch {}
+  if (!list) list = store.get("rm-cache-" + prev, null);  // 통신이 안 되면 이 폰에 받아둔 지난달 자료로
+  if (!dlg || dlg.kind !== "lock" || dlg.loc !== loc) return;
+  if (!list || !list.length) { dlg.miss = { none: true, prev }; drawDlg(); return }
+  const now = new Set(active().filter(e => e.loc === loc && e.r != null).map(itemKey));
+  const byKey = new Map();
+  for (const e of list) {
+    if (e.del || e.loc !== loc || e.r == null || isHidden(e)) continue;
+    const k = itemKey(e);
+    if (now.has(k)) continue;
+    byKey.set(k, { e, qty: (byKey.get(k)?.qty || 0) + Number(e.qty || 0) });
+  }
+  const items = [...byKey.values()].map(({ e, qty }) => {
+    const it = S.items.find(i => itemKey(i) === itemKey(e));
+    return { label: it ? itemLabel(it) : `${e.grp} ${e.spec}${e.len ?? ""}`, row: it ? it.r : null, qty, sort: it ? it.r : 1e9 };
+  }).sort((a, b) => a.sort - b.sort);
+  dlg.miss = { prev, items };
+  drawDlg();
+}
 function closeDlg() { dlg = null; $("dlgRoot").innerHTML = "" }
 function adminOff(msg) {
   S.admin = ""; store.set("rm-admin", "");
@@ -266,10 +293,18 @@ function drawDlg() {
   const mon = S.month ? monthLabel(S.month) : "";
   let body, okLabel;
   if (dlg.kind === "lock") {
+    const ms = dlg.miss;
+    const missHtml = !ms ? `<p>지난달과 비교하는 중…</p>`
+      : ms.none ? `<p>${esc(monthLabel(ms.prev))} 입력 자료가 없어 지난달과 비교하지 않았습니다.</p>`
+      : !ms.items.length ? `<p class="ok">✓ ${esc(monthLabel(ms.prev))}에 ${esc(name)}에 있던 품목은 모두 입력했습니다.</p>`
+      : `<p class="dupwarn">${esc(monthLabel(ms.prev))}에 ${esc(name)}에 있었는데 이번에 안 넣은 품목 ${ms.items.length}개</p>
+         <p>정말 없는지 확인해 주세요. 누르면 그 품목 입력 창이 열립니다.</p>
+         <div class="miss">${ms.items.map(x => `<button ${x.row != null ? `data-miss="${x.row}"` : "disabled"}><span>${esc(x.label)}</span><small>지난달 ${fmtInt(x.qty)}</small></button>`).join("")}</div>`;
     body = `<h2>${esc(name)} 입력을 마칠까요?</h2>
        <p>잠그면 ${esc(mon)} ${esc(name)}에는 누구도 입력·수정·삭제할 수 없습니다. 지금까지 입력 ${n}건은 그대로 남습니다.</p>
+       ${missHtml}
        <p>다시 고치려면 관리자가 잠금을 풀어야 합니다.</p>`;
-    okLabel = "잠그기";
+    okLabel = ms && !ms.none && ms.items.length ? "그래도 잠그기" : "잠그기";
   } else if (dlg.kind === "unlock") {
     body = `<h2>${esc(name)} 잠금 해제</h2><p>풀면 ${esc(name)} 담당자가 다시 입력·수정·삭제할 수 있습니다.</p>`;
     okLabel = "잠금 해제";
@@ -355,31 +390,72 @@ async function submitDlg() {
 }
 const opLoc = op => op.op === "add" ? op.entry.loc : (S.entries.find(e => e.id === op.id) || {}).loc;
 
-/* ---------- 처음 설정 ---------- */
+/* ---------- 처음 설정: 현장 코드 → 그달 담당자 명단에서 이름 고르기 ---------- */
+/* 이름을 손으로 치면 담당자 명단과 한 글자만 달라도 입력이 막히므로, 명단에서 고르게 한다 */
+let setup = null;
 function openSetup(msg) {
+  setup = { step: 1, names: [], pick: "", manual: false, mon: "" };
   $("setup").hidden = false;
-  $("setName").value = S.me;
   $("setCode").value = msg ? "" : S.code;
   $("setErr").textContent = msg || "";
+  drawSetup();
+}
+function drawSetup() {
+  const two = setup.step === 2;
+  $("setStep1").hidden = two; $("setStep2").hidden = !two; $("setBack").hidden = !two;
+  $("setBtn").textContent = two ? "시작하기" : "다음";
+  if (!two) return;
+  $("setMon").textContent = setup.mon ? `(${monthLabel(setup.mon)} 담당자)` : "";
+  $("setNames").innerHTML = setup.names.map(n => `<button type="button" class="nm" data-nm="${esc(n.name)}" aria-pressed="${!setup.manual && setup.pick === n.name}">${esc(n.name)}<small>${esc(n.locs.join(", "))}</small></button>`).join("")
+    + `<button type="button" class="nm other" data-nm="" aria-pressed="${setup.manual}">${setup.names.length ? "명단에 없어요 (관리자 등) · 직접 입력" : "이름 직접 입력"}</button>`;
+  $("setNameWrap").hidden = !setup.manual;
+}
+/* 담당자 명단 → [{name, locs:[구역명]}] */
+function nameList(mgrs) {
+  const m = new Map();
+  LOCS.forEach(l => (mgrs[l.key] || []).forEach(n => { if (!m.has(n)) m.set(n, []); m.get(n).push(l.name) }));
+  return [...m].map(([name, locs]) => ({ name, locs })).sort((a, b) => a.name.localeCompare(b.name, "ko"));
+}
+async function getWith(code, params) {
+  const u = new URL(API);
+  Object.entries({ ...params, code }).forEach(([k, v]) => u.searchParams.set(k, v));
+  return (await fetch(u, { cache: "no-store" })).json();
 }
 $("setupForm").addEventListener("submit", async ev => {
   ev.preventDefault();
-  const name = $("setName").value.trim(), code = $("setCode").value.trim();
-  if (!name || !code) return;
-  $("setBtn").disabled = true; $("setErr").textContent = "확인 중…";
-  let ok = true;
-  if (API) {
-    try {
-      const u = new URL(API); u.searchParams.set("action", "list"); u.searchParams.set("month", S.month || "0000-00"); u.searchParams.set("code", code);
-      const j = await (await fetch(u, { cache: "no-store" })).json();
-      if (j.ok === false && j.error === "code") ok = false;
-    } catch { /* 통신이 안 되면 일단 받아두고, 연결될 때 다시 확인된다 */ }
+  if (setup.step === 1) {
+    const code = $("setCode").value.trim();
+    if (!code) { $("setErr").textContent = "현장 코드를 넣어 주세요."; return }
+    $("setBtn").disabled = true; $("setErr").textContent = "확인 중…";
+    let mgrs = {}, mon = S.month, online = !!API;
+    if (API) {
+      try {
+        const j = await getWith(code, { action: "list", month: S.month || "0000-00" });
+        if (j.ok === false && j.error === "code") { $("setBtn").disabled = false; $("setErr").textContent = "현장 코드가 맞지 않습니다."; return }
+        mgrs = j.mgrs || {};
+        // 이번 달 담당자가 아직 없으면 지난달 명단을 보여준다
+        if (!Object.keys(mgrs).length && S.month) {
+          mon = addMonth(S.month, -1);
+          mgrs = (await getWith(code, { action: "mgrs", month: mon })).mgrs || {};
+        }
+      } catch { online = false }  // 통신이 안 되면 이름을 직접 받고, 연결될 때 코드를 다시 확인한다
+    }
+    $("setBtn").disabled = false;
+    setup.code = code; setup.step = 2; setup.mon = Object.keys(mgrs).length ? mon : "";
+    setup.names = nameList(mgrs);
+    setup.pick = setup.names.some(n => n.name === S.me) ? S.me : "";
+    setup.manual = !setup.names.length;
+    $("setName").value = setup.manual ? S.me : "";
+    $("setErr").textContent = !online ? "통신이 안 되어 명단을 못 불러왔습니다. 이름을 직접 넣어 주세요."
+      : !setup.names.length ? "아직 담당자가 정해지지 않았습니다. 이름을 직접 넣어 주세요." : "";
+    drawSetup();
+    return;
   }
-  $("setBtn").disabled = false;
-  if (!ok) { $("setErr").textContent = "현장 코드가 맞지 않습니다."; return }
-  S.me = name; S.code = code; store.set("rm-name", name); store.set("rm-code", code);
-  $("setup").hidden = true;
-  flush(); refresh();
+  const name = setup.manual ? $("setName").value.trim() : setup.pick;
+  if (!name) { $("setErr").textContent = setup.manual ? "이름을 넣어 주세요." : "이름을 골라 주세요."; return }
+  S.me = name; S.code = setup.code; store.set("rm-name", name); store.set("rm-code", setup.code);
+  $("setup").hidden = true; setup = null;
+  S.sig = ""; flush(); refresh(); renderAll();
 });
 
 /* ---------- 화면 ---------- */
@@ -589,8 +665,21 @@ function resHtml() {
   if (!sheet.expr) return `${locName(sheet.loc)}에 저장됩니다`;
   if (!num) return "식이 끝나지 않았습니다";
   const wt = sheet.it && ok ? ` · ${fmt(weightOf(sheet.it, val))} kg` : "";
-  return `= <b>${fmtInt(val)}</b> 本${wt}`;
+  const dup = sheet.dup ? `<div class="dupwarn">${minsAgo(sheet.dup.ts)} 같은 품목·구역에 ${fmtInt(val)}本을 이미 저장했습니다. 한 번 더 누르면 또 저장됩니다.</div>` : "";
+  return `= <b>${fmtInt(val)}</b> 本${wt}${dup}`;
 }
+/* 두 번 누름 방지: 10분 안에 내가 같은 품목·구역·수량을 저장한 기록 */
+const DUP_MS = 10 * 60 * 1000;
+function findDup(val) {
+  if (sheet.editing) return null;
+  const cname = sheet.custom ? (($("cname")?.value ?? sheet.cname) || "").trim() : null;
+  const now = Date.now();
+  return active().filter(e => e.loc === sheet.loc && e.by === S.me && e.qty === val
+      && (sheet.custom ? e.custom?.name === cname : e.r === sheet.it.r)
+      && now - new Date(e.ts).getTime() < DUP_MS)
+    .sort((a, b) => String(b.ts).localeCompare(String(a.ts)))[0] || null;
+}
+const minsAgo = ts => { const m = Math.floor((Date.now() - new Date(ts).getTime()) / 60000); return m < 1 ? "방금" : `${m}분 전에` };
 /* 키패드 입력 때는 창 전체를 다시 그리지 않고 숫자 칸과 저장 버튼만 바꾼다 (깜빡임 방지) */
 function updateDisplay() {
   if (!$("disp")) return;  // 잠긴 구역은 키패드가 없다
@@ -599,6 +688,7 @@ function updateDisplay() {
   $("dres").innerHTML = resHtml();
   $("disp").classList.toggle("bad", !!sheet.expr && !num);
   $("saveBtn").disabled = !ok;
+  $("saveBtn").textContent = sheet.editing ? "수정 저장" : sheet.dup ? "또 저장" : "저장";
 }
 function closeSheet() { sheet = null; $("sheetRoot").innerHTML = "" }
 function prevHtml() {
@@ -662,7 +752,7 @@ function press(k) {
   else if (k === "×" || k === "+") { if (!s || /[×+]$/.test(s)) return; s += k }
   else s += k;
   if (s.length > 60) return;
-  sheet.expr = s; updateDisplay();
+  sheet.expr = s; sheet.dup = null; updateDisplay();
 }
 function saveSheet() {
   if (isLocked(sheet.loc)) { toast("잠긴 구역에는 저장할 수 없습니다"); return }
@@ -670,6 +760,8 @@ function saveSheet() {
   if (sheet.editing && !canChange(sheet.editing)) { toast("이 기록은 수정할 수 없습니다"); return }
   const val = evalExpr(sheet.expr);
   if (typeof val !== "number" || isNaN(val)) return;
+  // 같은 값을 방금 저장했으면 한 번 경고하고, 한 번 더 누르면 저장한다
+  if (!sheet.dup) { const d = findDup(val); if (d) { sheet.dup = d; updateDisplay(); return } }
   const memo = ($("memo")?.value || "").trim();
   const expr = sheet.expr;
   if (sheet.editing) {
@@ -699,6 +791,13 @@ function toast(msg) {
 document.addEventListener("click", ev => {
   const t = ev.target.closest("button, [data-act]");
   if (!t) return;
+  if (setup && t.dataset.nm !== undefined) {
+    setup.manual = t.dataset.nm === ""; setup.pick = t.dataset.nm; $("setErr").textContent = ""; drawSetup();
+    if (setup.manual) $("setName").focus();
+    return
+  }
+  if (t.id === "setBack") { setup.step = 1; $("setErr").textContent = ""; drawSetup(); return }
+  if (t.dataset.miss) { const r = Number(t.dataset.miss); closeDlg(); openSheet(r); return }
   if (t.dataset.dlg) { t.dataset.dlg === "ok" ? submitDlg() : t.dataset.dlg === "prev" ? loadPrevMgrs() : closeDlg(); return }
   if (t.id === "adminBtn") { openDlg("admin"); return }
   if (t.id === "adminOffBtn") { adminOff("관리자 모드를 껐습니다"); return }
@@ -727,7 +826,7 @@ document.addEventListener("click", ev => {
   if (t.dataset.row) { openSheet(Number(t.dataset.row)); return }
   if (!sheet) return;
   if (t.dataset.act === "close") { closeSheet(); return }
-  if (t.dataset.sloc) { sheet.loc = t.dataset.sloc; keepFields(); drawSheet(); return }
+  if (t.dataset.sloc) { sheet.loc = t.dataset.sloc; sheet.dup = null; keepFields(); drawSheet(); return }
   if (t.dataset.k) { keepFields(); press(t.dataset.k); return }
   if (t.dataset.act === "save") { keepFields(); t.disabled = true; saveSheet(); return }
   if (t.dataset.act === "canceledit") { sheet.editing = null; sheet.expr = ""; drawSheet(); return }
@@ -746,7 +845,7 @@ document.addEventListener("input", ev => {
   if (ev.target.id === "lq") { S.lq = ev.target.value; renderLog() }
   if (ev.target.id === "aq") { S.aq = ev.target.value; renderAllLog() }
   if (ev.target.id === "iq") { S.iq = ev.target.value; renderAllItems() }
-  if (ev.target.id === "cname" && sheet) { sheet.cname = ev.target.value; updateDisplay() }
+  if (ev.target.id === "cname" && sheet) { sheet.cname = ev.target.value; sheet.dup = null; updateDisplay() }
 });
 document.addEventListener("change", ev => {
   if (ev.target.id === "grpSel") { S.grp = ev.target.value; renderItems() }
