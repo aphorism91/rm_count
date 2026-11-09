@@ -26,6 +26,7 @@ const S = {
   allView: "items", iq: "", allFilt: "done", aq: "", lloc: "", showDelA: false,
   locks: {}, mgrs: {}, admin: "", me: "", code: "", outbox: [], rejected: [], sending: false,
   prev: null, prevM: "", cq: "", cloc: "", cfilt: "big",
+  inb: null, nq: "", nfilt: "in",
 };
 const isLocked = loc => !!S.locks[loc];
 /* 권한: 구역 담당자는 그 구역 입력·잠금과 자기 기록 수정·삭제, 관리자는 전부 (구글 시트 쪽에서도 같은 규칙으로 막는다) */
@@ -136,9 +137,11 @@ async function setMonth(m) {
   S.server = store.get("rm-cache-" + m, []);
   S.locks = store.get("rm-locks-" + m, {});
   S.mgrs = store.get("rm-mgrs-" + m, {});
+  S.inb = null;
   S.loaded = S.server.length > 0; S.sig = "";
   merge(); renderAll();
   refresh(); loadPrev();
+  if (S.tab === "all" && S.allView === "inb") loadInb();
 }
 /* 다른 달 품목 목록으로 입력한 기록은 규격·길이가 같은 품목에 붙인다 */
 function remap(e) {
@@ -246,6 +249,22 @@ async function loadPrev() {
   if (sheet && !sheet.dirty) updateDisplay();
 }
 
+/* ---------- 입고 (관리자 [입고 비교]) ---------- */
+/* PC 스크립트(inbound_apply.py)가 구글 시트 '입고' 탭에 넣은 그달 입고를 관리자 코드로 받아온다 */
+async function loadInb() {
+  if (!S.admin || !API || !S.code) return;
+  const month = S.month;
+  try {
+    const j = await apiGet({ action: "inbound", month, admin: S.admin });
+    if (S.month !== month) return;
+    if (j.ok === false && (j.error === "admin" || j.error === "noadmin")) { S.inb = null; adminOff("관리자 코드가 맞지 않아 관리자 모드를 껐습니다"); return }
+    S.inb = j.ok === false
+      ? { month, err: j.error === "action" ? "저장소가 아직 새 버전이 아닙니다 (Code.gs 새 버전 배포 필요)." : `입고 자료를 받지 못했습니다 (${j.error}).` }
+      : { month, rows: j.rows || [], at: j.at || "" };
+  } catch { if (S.month === month && !S.inb) S.inb = { month, err: "통신이 안 되어 입고 자료를 받지 못했습니다." } }
+  if (S.tab === "all" && S.allView === "inb") renderInb();
+}
+
 S.outbox = store.get("rm-outbox", []);
 S.rejected = store.get("rm-rejected", []);
 function saveOutbox() { store.set("rm-outbox", S.outbox); store.set("rm-rejected", S.rejected) }
@@ -324,7 +343,7 @@ async function loadMiss(loc) {
 }
 function closeDlg() { dlg = null; $("dlgRoot").innerHTML = "" }
 function adminOff(msg) {
-  S.admin = ""; store.set("rm-admin", "");
+  S.admin = ""; store.set("rm-admin", ""); S.inb = null;
   if (msg) toast(msg);
   mergeAndRender(true);
 }
@@ -550,15 +569,59 @@ function renderTab() {
   if (S.tab === "input") renderItems();
   if (S.tab === "log") renderLog();
   if (S.tab === "all") {
-    for (const v of ["items", "log", "cmp", "sum"]) {
+    $("seg-inb").hidden = !S.admin;  // 입고 비교는 관리자만
+    if (!S.admin && S.allView === "inb") S.allView = "items";
+    for (const v of ["items", "log", "cmp", "inb", "sum"]) {
       $("seg-" + v).setAttribute("aria-pressed", S.allView === v);
       $("all-" + v).hidden = S.allView !== v;
     }
     if (S.allView === "items") renderAllItems();
     if (S.allView === "log") renderAllLog();
     if (S.allView === "cmp") renderCmp();
+    if (S.allView === "inb") renderInb();
     if (S.allView === "sum") renderSum();
   }
+}
+/* 입고 비교 (관리자): 지난달 실사 + 이번 달 입고 = 있어야 할 양 → 이번 달 실사 (전 구역 합계, 품목별) */
+function renderInb() {
+  const el = $("inbView");
+  if (!S.cat) return;
+  const mon = `${Number(S.month.split("-")[1])}월`, pm = addMonth(S.month, -1);
+  if (!S.inb || S.inb.month !== S.month) { el.innerHTML = `<div class="empty">입고 자료를 불러오는 중입니다.</div>`; return }
+  if (S.inb.err) { el.innerHTML = `<div class="empty">${esc(S.inb.err)}</div>`; return }
+  if (!S.inb.rows.length) { el.innerHTML = `<div class="empty">${mon} 입고 자료가 아직 없습니다.<br>PC의 Claude에게 <b>"${mon} 입고 반영해줘"</b>라고 하면 들어옵니다.</div>`; return }
+  if (S.prev == null) { el.innerHTML = `<div class="empty">${esc(monthLabel(pm))} 실사를 불러오는 중입니다.</div>`; return }
+  const add = (m, k, q) => m.set(k, (m.get(k) || 0) + q);
+  const inb = new Map(), cur = new Map(), pv = new Map(), unmatched = [];
+  for (const x of S.inb.rows) x.grp ? add(inb, curKey(x), x.qty) : unmatched.push(x);
+  for (const e of active()) if (e.r != null) add(cur, curKey(e), e.qty);
+  for (const e of S.prev) if (!e.del && e.r != null && !isHidden(e)) add(pv, prevKey(e), Number(e.qty || 0));
+  const byKey = new Map(S.items.map(i => [curKey(i), i]));
+  const words = S.nq.toLowerCase().replace(/×/g, "x").split(/\s+/).filter(Boolean);
+  const keys = S.nfilt === "in" ? [...inb.keys()] : [...new Set([...pv.keys(), ...inb.keys(), ...cur.keys()])];
+  const all = keys.map(k => {
+    const [base, row] = k.split("#"), [grp, spec, len] = base.split("|"), it = byKey.get(k);
+    const p = pv.get(k) || 0, i = inb.get(k) || 0, c = cur.get(k) || 0;
+    return { grp, label: `${spec}${len}${row ? ` (행 ${row})` : ""}`, hay: it ? it.hay : `${grpLabel(grp)} ${spec}${len}`.toLowerCase().replace(/×/g, "x"), p, i, c, d: c - p - i };
+  }).filter(x => !words.length || words.every(w => x.hay.includes(w))).sort((a, b) => Math.abs(b.d) - Math.abs(a.d));
+  const sum = f => all.reduce((s, x) => s + x[f], 0);
+  const sign = d => (d > 0 ? "+" : "") + fmtInt(d);
+  const um = unmatched.reduce((s, x) => s + x.qty, 0);
+  el.innerHTML = `
+    <div class="tbl"><table>
+      <thead><tr><th>${S.nfilt === "in" ? "입고 품목" : "전체 품목"} ${all.length}개</th><th>지난달</th><th>+ 입고</th><th>= 예상</th><th>실사</th><th>차이</th></tr></thead>
+      <tbody><tr><td>합계</td><td>${fmtInt(sum("p"))}</td><td>${fmtInt(sum("i"))}</td><td>${fmtInt(sum("p") + sum("i"))}</td><td>${fmtInt(sum("c"))}</td><td>${sign(sum("d"))}</td></tr></tbody>
+    </table></div>
+    <p class="cmpnote">${esc(monthLabel(pm))} 실사(전 구역) + ${mon} 입고 = 있어야 할 양. 차이가 <b>마이너스</b>면 그만큼 쓴 것(불출)이고, <b class="dupwarn">플러스</b>면 입고·지난달 실사 누락이나 입력 실수일 수 있습니다.
+      실사 중이면 아직 안 넣은 품목도 마이너스로 보입니다.${S.prev.length ? "" : ` ${esc(monthLabel(pm))} 실사 자료가 없어 지난달은 0입니다.`}
+      입고 자료: ${S.inb.at ? fmtTime(S.inb.at) + " 반영" : ""}.</p>
+    ${all.length ? `<div class="tbl"><table>
+      <thead><tr><th>품목</th><th>지난달</th><th>입고</th><th>실사</th><th>차이</th></tr></thead>
+      <tbody>${all.slice(0, 400).map(x => `<tr><td class="itm">${esc(x.label)}<small>${esc(grpLabel(x.grp))}</small></td><td>${x.p ? fmtInt(x.p) : "–"}</td><td>${x.i ? fmtInt(x.i) : "–"}</td><td>${x.c ? fmtInt(x.c) : "–"}</td><td class="${x.d > 0 ? "big" : "neg"}">${sign(x.d)}</td></tr>`).join("")}</tbody>
+    </table></div>` : `<div class="empty">조건에 맞는 품목이 없습니다.</div>`}
+    ${unmatched.length ? `<div class="card"><h2>앱 품목에 대응 안 된 입고 ${unmatched.length}종 · ${fmtInt(um)}本</h2>
+      <p>입고_품목대응표.csv 에 앱 품목을 적어 주면 다음 반영부터 비교에 들어갑니다.</p>
+      ${unmatched.map(x => `<p>${esc(x.src || x.spec)} · ${fmtInt(x.qty)}本</p>`).join("")}</div>` : ""}`;
 }
 /* 전월 비교: 품목별 지난달·이번 달 수량과 차이 (차이 큰 순). 목록에 없는 품목은 비교하지 않는다 */
 function renderCmp() {
@@ -911,7 +974,10 @@ document.addEventListener("click", ev => {
   if (t.id === "mgrBtn") { openDlg("mgrs"); return }
   if (t.dataset.loc) { S.loc = t.dataset.loc; store.set("rm-loc", S.loc); renderLocBar(); renderTab(); return }
   if (t.classList.contains("tab")) { S.tab = t.id.slice(4); renderLocBar(); renderTab(); return }
-  if (t.id.startsWith("seg-")) { S.allView = t.id.slice(4); renderTab(); return }
+  if (t.id.startsWith("seg-")) { S.allView = t.id.slice(4); renderTab(); if (S.allView === "inb") loadInb(); return }
+  if (t.id === "nf-in" || t.id === "nf-all") {
+    S.nfilt = t.id.slice(3); ["in", "all"].forEach(f => $("nf-" + f).setAttribute("aria-pressed", S.nfilt === f)); renderInb(); return
+  }
   if (t.id === "af-done" || t.id === "af-all") {
     S.allFilt = t.id.slice(3); ["done", "all"].forEach(f => $("af-" + f).setAttribute("aria-pressed", S.allFilt === f)); renderAllItems(); return
   }
@@ -956,6 +1022,7 @@ document.addEventListener("input", ev => {
   if (ev.target.id === "aq") { S.aq = ev.target.value; renderAllLog() }
   if (ev.target.id === "iq") { S.iq = ev.target.value; renderAllItems() }
   if (ev.target.id === "cq") { S.cq = ev.target.value; renderCmp() }
+  if (ev.target.id === "nq") { S.nq = ev.target.value; renderInb() }
   if (ev.target.id === "cname" && sheet) { sheet.cname = ev.target.value; sheet.dup = null; updateDisplay() }
 });
 document.addEventListener("change", ev => {

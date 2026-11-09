@@ -196,7 +196,9 @@ tfoot td { font-weight: 700 }
 .pvtag.big { border: 1px solid var(--warn); background: var(--warn-soft); color: var(--warn); font-weight: 700 }
 .cmpline.big, td.big { color: var(--warn); font-weight: 700 }
 .cmpline { font-size: 13px; color: var(--muted); margin-top: 2px }
-#cmpView th, #cmpView td { padding: 8px 7px }
+#cmpView th, #cmpView td, #inbView th, #inbView td { padding: 8px 6px }
+.seg .chip[hidden] { display: none }
+td.neg { color: var(--muted) }
 td.itm { white-space: normal; min-width: 100px }
 td.itm small { display: block; color: var(--muted); font-size: 11.5px }
 .cmpnote { color: var(--muted); font-size: 12.5px; margin: 0 }
@@ -285,6 +287,7 @@ td.itm small { display: block; color: var(--muted); font-size: 11.5px }
       <button class="chip" id="seg-items" aria-pressed="true">전체 입력값</button>
       <button class="chip" id="seg-log" aria-pressed="false">전체 입력 내역</button>
       <button class="chip" id="seg-cmp" aria-pressed="false">전월 비교</button>
+      <button class="chip" id="seg-inb" aria-pressed="false" hidden>입고 비교</button>
       <button class="chip" id="seg-sum" aria-pressed="false">집계</button>
     </div>
     <div id="all-items">
@@ -313,6 +316,15 @@ td.itm small { display: block; color: var(--muted); font-size: 11.5px }
         <button class="chip" id="cf-all" aria-pressed="false">전체</button>
       </div>
       <div class="sum" id="cmpView"></div>
+    </div>
+    <!-- 입고 비교: 관리자 모드에서만 -->
+    <div id="all-inb" hidden>
+      <div class="search"><input id="nq" type="search" placeholder="규격·길이 검색" autocomplete="off"></div>
+      <div class="filters">
+        <button class="chip" id="nf-in" aria-pressed="true">입고 있는 품목만</button>
+        <button class="chip" id="nf-all" aria-pressed="false">전체</button>
+      </div>
+      <div class="sum" id="inbView"></div>
     </div>
     <div id="all-sum" hidden>
       <div class="sum" id="sumView"></div>
