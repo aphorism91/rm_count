@@ -60,7 +60,19 @@ function evalExpr(expr) {
   return total;
 }
 const weightOf = (it, qty) => it && it.len && it.uw ? (it.len / 1000) * it.uw * qty : 0;
-const itemLabel = it => it ? `${it.grp} ${it.spec}${it.len ?? ""}` : "";
+/* 현장에서 부르는 이름: 화면에만 원래 품목군 이름 뒤 괄호로 붙인다 (시트·엑셀에는 원래 이름 그대로 저장)
+ * 띄어쓰기는 무시하고 맞춘다 ("W.E.P (무)" = "W.E.P(무)") */
+const GRP_ALIAS = {
+  "SHEET BAR": "시트바", "SHEET 보강대": "시트보강대", "HALF SHEET": "하프시트", "ONE SHEET": "원시트",
+  "W.E.P (무)": "형상: ㅠ", "W.E.P (한)": "형상: ㅠ+한쪽면귀", "W.E.P (양)": "형상: ㅠ+양쪽면귀",
+  "W-HALF SHEET (무)": "형상: ㅜ", "W-HALF SHEET(콤비)": "형상: ㅜ+콤비", "W-HALF SHEET (면귀부착)": "형상: ㅜ+면귀",
+  "HALF SHEET (면귀부착)": "하프시트 면귀", "HALF SHEET (콤비부착)": "하프시트 콤비",
+  "SOFFIT (I/C용)": "알인코너", "ANGLE": "앵글,로카", "PROP HEAD": "프롭헤드", "MIDDLE BEAM": "MB,EB",
+};
+const normGrp = g => String(g || "").replace(/\s/g, "");
+const GRP_ALIAS_N = new Map(Object.entries(GRP_ALIAS).map(([k, v]) => [normGrp(k), v]));
+const grpLabel = g => GRP_ALIAS_N.has(normGrp(g)) ? `${g} (${GRP_ALIAS_N.get(normGrp(g))})` : (g || "");
+const itemLabel = it => it ? `${grpLabel(it.grp)} ${it.spec}${it.len ?? ""}` : "";
 const entryItem = e => e.r != null ? S.byRow.get(e.r) : null;
 const entryLabel = e => {
   const it = entryItem(e);
@@ -106,14 +118,14 @@ async function loadCatalog(c) {
   S.cat = cat;
   S.byRow = new Map();
   S.items = cat.items.map(([r, grp, spec, len, uw, code]) => ({ r, grp, spec, len, uw, code,
-    hay: `${grp} ${spec} ${len ?? ""} ${spec}${len ?? ""} ${code}`.toLowerCase().replace(/×/g, "x") })).filter(it => !isHidden(it));
+    hay: `${grpLabel(grp)} ${spec} ${len ?? ""} ${spec}${len ?? ""} ${code}`.toLowerCase().replace(/×/g, "x") })).filter(it => !isHidden(it));
   S.items.forEach(it => S.byRow.set(it.r, it));
   const seen = new Set();
   dupKeys = new Set();
   S.items.forEach(it => { const k = itemKey(it); if (seen.has(k)) dupKeys.add(k); seen.add(k) });
   if (S.prev) setPrev(S.prevM, S.prev);  // 품목 목록이 바뀌면 지난달 색인도 다시 만든다
   const groups = [...new Set(S.items.map(i => i.grp))];
-  $("grpSel").innerHTML = `<option value="">전체 품목군</option>` + groups.map(g => `<option>${esc(g)}</option>`).join("");
+  $("grpSel").innerHTML = `<option value="">전체 품목군</option>` + groups.map(g => `<option value="${esc(g)}">${esc(grpLabel(g))}</option>`).join("");
   if (!groups.includes(S.grp)) S.grp = "";
   $("grpSel").value = S.grp;
 }
@@ -572,7 +584,7 @@ function renderCmp() {
   const all = [...new Set([...cur.keys(), ...pv.keys()])].map(k => {
     const [base, row] = k.split("#"), it = byKey.get(k), [grp, spec, len] = base.split("|");
     const p = pv.get(k) || 0, c = cur.get(k) || 0;
-    return { grp, label: `${spec}${len}${row ? ` (행 ${row})` : ""}`, hay: (it ? it.hay : `${grp} ${spec} ${len} ${spec}${len}`.toLowerCase().replace(/×/g, "x")), p, c, d: c - p, big: bigDiff(p, c) };
+    return { grp, label: `${spec}${len}${row ? ` (행 ${row})` : ""}`, hay: (it ? it.hay : `${grpLabel(grp)} ${spec} ${len} ${spec}${len}`.toLowerCase().replace(/×/g, "x")), p, c, d: c - p, big: bigDiff(p, c) };
   }).filter(x => !words.length || words.every(w => x.hay.includes(w)));
   const rows = all.filter(x => S.cfilt === "all" || x.big).sort((a, b) => Math.abs(b.d) - Math.abs(a.d));
   const sign = d => (d > 0 ? "+" : "") + fmtInt(d);
@@ -587,7 +599,7 @@ function renderCmp() {
       '차이 큰 것' = 전월의 2배 이상·절반 이하, 이번에 새로 생겼거나 빠진 품목${loc ? "" : " (모든 장소 합계 기준)"}. ${all.filter(x => x.big).length}개 / 전체 ${all.length}개.</p>
     ${rows.length ? `<div class="tbl"><table>
       <thead><tr><th>품목${loc ? ` (${esc(locName(loc))})` : ""}</th><th>전월</th><th>이번</th><th>차이</th><th>비율</th></tr></thead>
-      <tbody>${rows.slice(0, 400).map(x => `<tr><td class="itm">${esc(x.label)}<small>${esc(x.grp)}</small></td><td>${x.p ? fmtInt(x.p) : "–"}</td><td>${x.c ? fmtInt(x.c) : "–"}</td><td class="${x.big ? "big" : ""}">${sign(x.d)}</td><td class="${x.big ? "big" : ""}">${ratio(x)}</td></tr>`).join("")}</tbody>
+      <tbody>${rows.slice(0, 400).map(x => `<tr><td class="itm">${esc(x.label)}<small>${esc(grpLabel(x.grp))}</small></td><td>${x.p ? fmtInt(x.p) : "–"}</td><td>${x.c ? fmtInt(x.c) : "–"}</td><td class="${x.big ? "big" : ""}">${sign(x.d)}</td><td class="${x.big ? "big" : ""}">${ratio(x)}</td></tr>`).join("")}</tbody>
     </table></div>` : `<div class="empty">${S.cfilt === "big" ? "차이가 큰 품목이 없습니다." : "조건에 맞는 품목이 없습니다."}</div>`}`;
 }
 function renderItems() {
@@ -613,7 +625,7 @@ function renderItems() {
     if (it.grp !== g) {
       if (g !== null) html += `</div></section>`;
       g = it.grp;
-      html += `<section><div class="grp"><span>${esc(g)}</span><small>${grpDone[g] || 0}/${grpCount[g]}</small></div><div class="list">`;
+      html += `<section><div class="grp"><span>${esc(grpLabel(g))}</span><small>${grpDone[g] || 0}/${grpCount[g]}</small></div><div class="list">`;
     }
     const hasHere = byItemLoc.has(`${it.r}|${S.loc}`);
     const here = byItemLoc.get(`${it.r}|${S.loc}`) || 0;
@@ -672,7 +684,7 @@ function renderAllItems() {
     if (it.grp !== g) {
       if (g !== null) html += `</div></section>`;
       g = it.grp;
-      html += `<section><div class="grp"><span>${esc(g)}</span></div><div class="list">`;
+      html += `<section><div class="grp"><span>${esc(grpLabel(g))}</span></div><div class="list">`;
     }
     const all = byItem.get(it.r);
     html += `<div class="item ro${all ? " done" : ""}">
@@ -815,7 +827,7 @@ function drawSheet() {
   const anim = sheet.fresh ? " anim" : "";
   sheet.fresh = false;
   const head = it
-    ? `<h2>${esc(it.grp)} · ${esc(it.spec)}<span class="num">${it.len ?? ""}</span></h2><div class="meta">${esc(it.code || "코드 없음")} · ${it.uw ?? "-"} kg/m · 행 ${it.r}</div>`
+    ? `<h2>${esc(grpLabel(it.grp))} · ${esc(it.spec)}<span class="num">${it.len ?? ""}</span></h2><div class="meta">${esc(it.code || "코드 없음")} · ${it.uw ?? "-"} kg/m · 행 ${it.r}</div>`
     : `<h2>목록에 없는 품목</h2><div class="meta">집계표 '당월 추가품목'으로 따로 정리됩니다</div>`;
   $("sheetRoot").innerHTML = `
     <div class="scrim" data-act="close"></div>
