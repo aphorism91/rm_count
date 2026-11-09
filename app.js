@@ -108,6 +108,10 @@ async function loadCatalog(c) {
   S.items = cat.items.map(([r, grp, spec, len, uw, code]) => ({ r, grp, spec, len, uw, code,
     hay: `${grp} ${spec} ${len ?? ""} ${spec}${len ?? ""} ${code}`.toLowerCase().replace(/×/g, "x") })).filter(it => !isHidden(it));
   S.items.forEach(it => S.byRow.set(it.r, it));
+  const seen = new Set();
+  dupKeys = new Set();
+  S.items.forEach(it => { const k = itemKey(it); if (seen.has(k)) dupKeys.add(k); seen.add(k) });
+  if (S.prev) setPrev(S.prevM, S.prev);  // 품목 목록이 바뀌면 지난달 색인도 다시 만든다
   const groups = [...new Set(S.items.map(i => i.grp))];
   $("grpSel").innerHTML = `<option value="">전체 품목군</option>` + groups.map(g => `<option>${esc(g)}</option>`).join("");
   if (!groups.includes(S.grp)) S.grp = "";
@@ -196,19 +200,24 @@ async function refresh() {
 /* ---------- 지난달 입력 (전월 비교·빠진 품목) ---------- */
 /* 품목은 규격·길이로 맞춘다 (집계표 행 번호는 달마다 바뀔 수 있다) */
 const itemKey = e => `${e.grp}|${e.spec}|${e.len ?? ""}`;
+/* 집계표에 규격·길이가 똑같은 줄이 두 개 이상인 품목(판도라 59.5×4800 등)은 행 번호까지 붙여 따로 맞춘다.
+ * 지난달 기록은 같은 품목 목록(cm)으로 입력한 경우에만 행 번호를 믿는다 */
+let dupKeys = new Set();
+const curKey = e => dupKeys.has(itemKey(e)) ? itemKey(e) + "#" + e.r : itemKey(e);
+const prevKey = e => dupKeys.has(itemKey(e)) && e.cm === S.cat?.month ? itemKey(e) + "#" + e.r : itemKey(e);
 let prevIdx = new Map();  // "품목|구역" → 수량, "품목|" → 전 구역 합계
 function setPrev(m, list) {
   S.prevM = m; S.prev = list;
   prevIdx = new Map();
   for (const e of list || []) {
     if (e.del || e.r == null) continue;
-    const k = itemKey(e), q = Number(e.qty || 0);
+    const k = prevKey(e), q = Number(e.qty || 0);
     prevIdx.set(k + "|" + e.loc, (prevIdx.get(k + "|" + e.loc) || 0) + q);
     prevIdx.set(k + "|", (prevIdx.get(k + "|") || 0) + q);
   }
 }
 /* 지난달 자료가 없으면 null (비교하지 않음) */
-const prevQty = (it, loc) => S.prev && S.prev.length ? (prevIdx.get(itemKey(it) + "|" + (loc || "")) || 0) : null;
+const prevQty = (it, loc) => S.prev && S.prev.length ? (prevIdx.get(curKey(it) + "|" + (loc || "")) || 0) : null;
 /* 크게 다름: 2배 이상·절반 이하, 또는 한쪽에만 있음 */
 const bigDiff = (pv, cur) => pv > 0 && cur > 0 ? (cur >= pv * 2 || cur <= pv * 0.5) : pv !== cur;
 async function loadPrev() {
@@ -286,16 +295,16 @@ async function loadMiss(loc) {
   const prev = S.prevM, list = S.prev;
   if (!dlg || dlg.kind !== "lock" || dlg.loc !== loc) return;
   if (!list || !list.length) { dlg.miss = { none: true, prev }; drawDlg(); return }
-  const now = new Set(active().filter(e => e.loc === loc && e.r != null).map(itemKey));
+  const now = new Set(active().filter(e => e.loc === loc && e.r != null).map(curKey));
   const byKey = new Map();
   for (const e of list) {
     if (e.del || e.loc !== loc || e.r == null || isHidden(e)) continue;
-    const k = itemKey(e);
+    const k = prevKey(e);
     if (now.has(k)) continue;
-    byKey.set(k, { e, qty: (byKey.get(k)?.qty || 0) + Number(e.qty || 0) });
+    byKey.set(k, { e, k, qty: (byKey.get(k)?.qty || 0) + Number(e.qty || 0) });
   }
-  const items = [...byKey.values()].map(({ e, qty }) => {
-    const it = S.items.find(i => itemKey(i) === itemKey(e));
+  const items = [...byKey.values()].map(({ e, k, qty }) => {
+    const it = S.items.find(i => curKey(i) === k);
     return { label: it ? itemLabel(it) : `${e.grp} ${e.spec}${e.len ?? ""}`, row: it ? it.r : null, qty, sort: it ? it.r : 1e9 };
   }).sort((a, b) => a.sort - b.sort);
   dlg.miss = { prev, items };
@@ -556,14 +565,14 @@ function renderCmp() {
   const tp = locRows.reduce((s, x) => s + x.p, 0), tc = locRows.reduce((s, x) => s + x.c, 0);
   // 품목별 (고른 구역만)
   const loc = S.cloc, cur = new Map(), pv = new Map();
-  for (const e of active()) if (e.r != null && (!loc || e.loc === loc)) add(cur, itemKey(e), e.qty);
-  for (const e of S.prev) if (!e.del && e.r != null && (!loc || e.loc === loc) && !isHidden(e)) add(pv, itemKey(e), Number(e.qty || 0));
-  const byKey = new Map(S.items.map(i => [itemKey(i), i]));
+  for (const e of active()) if (e.r != null && (!loc || e.loc === loc)) add(cur, curKey(e), e.qty);
+  for (const e of S.prev) if (!e.del && e.r != null && (!loc || e.loc === loc) && !isHidden(e)) add(pv, prevKey(e), Number(e.qty || 0));
+  const byKey = new Map(S.items.map(i => [curKey(i), i]));
   const words = S.cq.toLowerCase().replace(/×/g, "x").split(/\s+/).filter(Boolean);
   const all = [...new Set([...cur.keys(), ...pv.keys()])].map(k => {
-    const it = byKey.get(k), [grp, spec, len] = k.split("|");
+    const [base, row] = k.split("#"), it = byKey.get(k), [grp, spec, len] = base.split("|");
     const p = pv.get(k) || 0, c = cur.get(k) || 0;
-    return { grp, label: `${spec}${len}`, hay: (it ? it.hay : `${grp} ${spec} ${len} ${spec}${len}`.toLowerCase().replace(/×/g, "x")), p, c, d: c - p, big: bigDiff(p, c) };
+    return { grp, label: `${spec}${len}${row ? ` (행 ${row})` : ""}`, hay: (it ? it.hay : `${grp} ${spec} ${len} ${spec}${len}`.toLowerCase().replace(/×/g, "x")), p, c, d: c - p, big: bigDiff(p, c) };
   }).filter(x => !words.length || words.every(w => x.hay.includes(w)));
   const rows = all.filter(x => S.cfilt === "all" || x.big).sort((a, b) => Math.abs(b.d) - Math.abs(a.d));
   const sign = d => (d > 0 ? "+" : "") + fmtInt(d);
