@@ -26,7 +26,7 @@ const S = {
   allView: "items", iq: "", allFilt: "done", aq: "", lloc: "", showDelA: false,
   locks: {}, mgrs: {}, admin: "", me: "", code: "", outbox: [], rejected: [], sending: false,
   prev: null, prevM: "", cq: "", cloc: "", cfilt: "big",
-  inb: null, nq: "", nfilt: "in",
+  inb: null,
 };
 const isLocked = loc => !!S.locks[loc];
 /* 권한: 구역 담당자는 그 구역 입력·잠금과 자기 기록 수정·삭제, 관리자는 전부 (구글 시트 쪽에서도 같은 규칙으로 막는다) */
@@ -141,7 +141,7 @@ async function setMonth(m) {
   S.loaded = S.server.length > 0; S.sig = "";
   merge(); renderAll();
   refresh(); loadPrev();
-  if (S.tab === "all" && (S.allView === "inb" || S.allView === "cmp")) loadInb();
+  if (S.tab === "all" && S.allView === "cmp") loadInb();
 }
 /* 다른 달 품목 목록으로 입력한 기록은 규격·길이가 같은 품목에 붙인다 */
 function remap(e) {
@@ -249,7 +249,7 @@ async function loadPrev() {
   if (sheet && !sheet.dirty) updateDisplay();
 }
 
-/* ---------- 입고 (관리자 [입고 비교]) ---------- */
+/* ---------- 입고 (관리자 [비교]) ---------- */
 /* PC 스크립트(inbound_apply.py)가 구글 시트 '입고' 탭에 넣은 그달 입고를 관리자 코드로 받아온다 */
 async function loadInb() {
   if (!S.admin || !API || !S.code) return;
@@ -262,7 +262,6 @@ async function loadInb() {
       ? { month, err: j.error === "action" ? "저장소가 아직 새 버전이 아닙니다 (Code.gs 새 버전 배포 필요)." : `입고 자료를 받지 못했습니다 (${j.error}).` }
       : { month, rows: j.rows || [], at: j.at || "" };
   } catch { if (S.month === month && !S.inb) S.inb = { month, err: "통신이 안 되어 입고 자료를 받지 못했습니다." } }
-  if (S.tab === "all" && S.allView === "inb") renderInb();
   if (S.tab === "all" && S.allView === "cmp") renderCmp();
 }
 
@@ -570,61 +569,20 @@ function renderTab() {
   if (S.tab === "input") renderItems();
   if (S.tab === "log") renderLog();
   if (S.tab === "all") {
-    $("seg-inb").hidden = $("seg-cmp").hidden = !S.admin;  // 전월 비교·입고 비교는 관리자만
-    if (!S.admin && (S.allView === "inb" || S.allView === "cmp")) S.allView = "items";
-    for (const v of ["items", "log", "cmp", "inb", "sum"]) {
+    $("seg-cmp").hidden = !S.admin;  // 비교(지난달·입고)는 관리자만
+    if (!S.admin && S.allView === "cmp") S.allView = "items";
+    for (const v of ["items", "log", "cmp", "sum"]) {
       $("seg-" + v).setAttribute("aria-pressed", S.allView === v);
       $("all-" + v).hidden = S.allView !== v;
     }
     if (S.allView === "items") renderAllItems();
     if (S.allView === "log") renderAllLog();
     if (S.allView === "cmp") renderCmp();
-    if (S.allView === "inb") renderInb();
     if (S.allView === "sum") renderSum();
   }
 }
-/* 입고 비교 (관리자): 지난달 실사 + 이번 달 입고 = 있어야 할 양 → 이번 달 실사 (전 구역 합계, 품목별) */
-function renderInb() {
-  const el = $("inbView");
-  if (!S.cat) return;
-  const mon = `${Number(S.month.split("-")[1])}월`, pm = addMonth(S.month, -1);
-  if (!S.inb || S.inb.month !== S.month) { el.innerHTML = `<div class="empty">입고 자료를 불러오는 중입니다.</div>`; return }
-  if (S.inb.err) { el.innerHTML = `<div class="empty">${esc(S.inb.err)}</div>`; return }
-  if (!S.inb.rows.length) { el.innerHTML = `<div class="empty">${mon} 입고 자료가 아직 없습니다.<br>PC의 Claude에게 <b>"${mon} 입고 반영해줘"</b>라고 하면 들어옵니다.</div>`; return }
-  if (S.prev == null) { el.innerHTML = `<div class="empty">${esc(monthLabel(pm))} 실사를 불러오는 중입니다.</div>`; return }
-  const add = (m, k, q) => m.set(k, (m.get(k) || 0) + q);
-  const inb = new Map(), cur = new Map(), pv = new Map(), unmatched = [];
-  for (const x of S.inb.rows) x.grp ? add(inb, curKey(x), x.qty) : unmatched.push(x);
-  for (const e of active()) if (e.r != null) add(cur, curKey(e), e.qty);
-  for (const e of S.prev) if (!e.del && e.r != null && !isHidden(e)) add(pv, prevKey(e), Number(e.qty || 0));
-  const byKey = new Map(S.items.map(i => [curKey(i), i]));
-  const words = S.nq.toLowerCase().replace(/×/g, "x").split(/\s+/).filter(Boolean);
-  const keys = S.nfilt === "in" ? [...inb.keys()] : [...new Set([...pv.keys(), ...inb.keys(), ...cur.keys()])];
-  const all = keys.map(k => {
-    const [base, row] = k.split("#"), [grp, spec, len] = base.split("|"), it = byKey.get(k);
-    const p = pv.get(k) || 0, i = inb.get(k) || 0, c = cur.get(k) || 0;
-    return { grp, label: `${spec}${len}${row ? ` (행 ${row})` : ""}`, hay: it ? it.hay : `${grpLabel(grp)} ${spec}${len}`.toLowerCase().replace(/×/g, "x"), p, i, c, d: c - p - i };
-  }).filter(x => !words.length || words.every(w => x.hay.includes(w))).sort((a, b) => Math.abs(b.d) - Math.abs(a.d));
-  const sum = f => all.reduce((s, x) => s + x[f], 0);
-  const sign = d => (d > 0 ? "+" : "") + fmtInt(d);
-  const um = unmatched.reduce((s, x) => s + x.qty, 0);
-  el.innerHTML = `
-    <div class="tbl"><table>
-      <thead><tr><th>${S.nfilt === "in" ? "입고 품목" : "전체 품목"} ${all.length}개</th><th>지난달</th><th>+ 입고</th><th>= 예상</th><th>실사</th><th>차이</th></tr></thead>
-      <tbody><tr><td>합계</td><td>${fmtInt(sum("p"))}</td><td>${fmtInt(sum("i"))}</td><td>${fmtInt(sum("p") + sum("i"))}</td><td>${fmtInt(sum("c"))}</td><td>${sign(sum("d"))}</td></tr></tbody>
-    </table></div>
-    <p class="cmpnote">${esc(monthLabel(pm))} 실사(전 구역) + ${mon} 입고 = 있어야 할 양. 차이가 <b>마이너스</b>면 그만큼 쓴 것(불출)이고, <b class="dupwarn">플러스</b>면 입고·지난달 실사 누락이나 입력 실수일 수 있습니다.
-      실사 중이면 아직 안 넣은 품목도 마이너스로 보입니다.${S.prev.length ? "" : ` ${esc(monthLabel(pm))} 실사 자료가 없어 지난달은 0입니다.`}
-      입고 자료: ${S.inb.at ? fmtTime(S.inb.at) + " 반영" : ""}.</p>
-    ${all.length ? `<div class="tbl"><table>
-      <thead><tr><th>품목</th><th>지난달</th><th>입고</th><th>실사</th><th>차이</th></tr></thead>
-      <tbody>${all.slice(0, 400).map(x => `<tr><td class="itm">${esc(x.label)}<small>${esc(grpLabel(x.grp))}</small></td><td>${x.p ? fmtInt(x.p) : "–"}</td><td>${x.i ? fmtInt(x.i) : "–"}</td><td>${x.c ? fmtInt(x.c) : "–"}</td><td class="${x.d > 0 ? "big" : "neg"}">${sign(x.d)}</td></tr>`).join("")}</tbody>
-    </table></div>` : `<div class="empty">조건에 맞는 품목이 없습니다.</div>`}
-    ${unmatched.length ? `<div class="card"><h2>앱 품목에 대응 안 된 입고 ${unmatched.length}종 · ${fmtInt(um)}本</h2>
-      <p>입고_품목대응표.csv 에 앱 품목을 적어 주면 다음 반영부터 비교에 들어갑니다.</p>
-      ${unmatched.map(x => `<p>${esc(x.src || x.spec)} · ${fmtInt(x.qty)}本</p>`).join("")}</div>` : ""}`;
-}
-/* 전월 비교 (관리자): 품목별 지난달·이번 달 수량과 차이 (차이 큰 순). 목록에 없는 품목은 비교하지 않는다.
+/* 비교 (관리자): 품목별 지난달·이번 달 수량과 차이 (차이 큰 순). 목록에 없는 품목은 비교하지 않는다.
+ * 필터: 차이 큰 것 / 입고 품목 / 전체. 앱 품목에 대응 안 된 입고는 아래에 따로 보여준다.
  * 모든 장소로 볼 때 이번 달 입고 자료가 있으면 "지난달 + 입고" 와 비교한다 (입고는 구역 구분이 없다).
  * 지난달에 야적장2 기록이 없으면(9월처럼 야적장에 같이 적은 달) 야적장·야적장2 를 합쳐 비교한다. */
 function renderCmp() {
@@ -660,7 +618,10 @@ function renderCmp() {
     const p = pv.get(k) || 0, i = inb.get(k) || 0, c = cur.get(k) || 0, x = p + i;
     return { grp, label: `${spec}${len}${row ? ` (행 ${row})` : ""}`, hay: (it ? it.hay : `${grpLabel(grp)} ${spec} ${len} ${spec}${len}`.toLowerCase().replace(/×/g, "x")), p, i, c, x, d: c - x, big: bigDiff(x, c) };
   }).filter(x => !words.length || words.every(w => x.hay.includes(w)));
-  const rows = all.filter(x => S.cfilt === "all" || x.big).sort((a, b) => Math.abs(b.d) - Math.abs(a.d));
+  const rows = all.filter(x => S.cfilt === "all" || (S.cfilt === "in" ? x.i > 0 : x.big)).sort((a, b) => Math.abs(b.d) - Math.abs(a.d));
+  const unmatched = useInb ? S.inb.rows.filter(x => !x.grp) : [];
+  const emptyMsg = S.cfilt === "in" ? (useInb ? "조건에 맞는 입고 품목이 없습니다." : "입고 품목은 '모든 장소'로 볼 때, 그달 입고 자료가 있을 때만 볼 수 있습니다.")
+    : S.cfilt === "big" ? "차이가 큰 품목이 없습니다." : "조건에 맞는 품목이 없습니다.";
   const sign = d => (d > 0 ? "+" : "") + fmtInt(d);
   const ratio = x => x.x && x.c ? `${Math.round(x.c / x.x * 100)}%` : x.c ? "신규" : "없음";
   const inbNote = loc ? "구역을 고르면 입고 없이 비교합니다 (입고는 구역 구분이 없음)."
@@ -678,7 +639,11 @@ function renderCmp() {
     ${rows.length ? `<div class="tbl"><table>
       <thead><tr><th>품목${loc ? ` (${esc(lname(loc))})` : ""}</th><th>전월</th>${useInb ? "<th>입고</th>" : ""}<th>이번</th><th>차이</th>${useInb ? "" : "<th>비율</th>"}</tr></thead>
       <tbody>${rows.slice(0, 400).map(x => `<tr><td class="itm">${esc(x.label)}<small>${esc(grpLabel(x.grp))}</small></td><td>${x.p ? fmtInt(x.p) : "–"}</td>${useInb ? `<td>${x.i ? fmtInt(x.i) : "–"}</td>` : ""}<td>${x.c ? fmtInt(x.c) : "–"}</td><td class="${x.big ? "big" : ""}">${sign(x.d)}</td>${useInb ? "" : `<td class="${x.big ? "big" : ""}">${ratio(x)}</td>`}</tr>`).join("")}</tbody>
-    </table></div>` : `<div class="empty">${S.cfilt === "big" ? "차이가 큰 품목이 없습니다." : "조건에 맞는 품목이 없습니다."}</div>`}`;
+    </table></div>` : `<div class="empty">${emptyMsg}</div>`}
+    ${useInb ? `<p class="cmpnote">입고 자료: ${S.inb.at ? fmtTime(S.inb.at) + " 반영" : ""}. 차이가 마이너스면 그만큼 쓴 것(불출), <b class="dupwarn">플러스</b>면 입고·지난달 실사 누락이나 입력 실수일 수 있습니다.</p>` : ""}
+    ${unmatched.length ? `<div class="card"><h2>앱 품목에 대응 안 된 입고 ${unmatched.length}종 · ${fmtInt(unmatched.reduce((s, x) => s + x.qty, 0))}本</h2>
+      <p>입고_품목대응표.csv 에 앱 품목을 적어 주면 다음 반영부터 비교에 들어갑니다.</p>
+      ${unmatched.map(x => `<p>${esc(x.src || x.spec)} · ${fmtInt(x.qty)}本</p>`).join("")}</div>` : ""}`;
 }
 function renderItems() {
   if (!S.cat) return;
@@ -989,15 +954,12 @@ document.addEventListener("click", ev => {
   if (t.id === "mgrBtn") { openDlg("mgrs"); return }
   if (t.dataset.loc) { S.loc = t.dataset.loc; store.set("rm-loc", S.loc); renderLocBar(); renderTab(); return }
   if (t.classList.contains("tab")) { S.tab = t.id.slice(4); renderLocBar(); renderTab(); return }
-  if (t.id.startsWith("seg-")) { S.allView = t.id.slice(4); renderTab(); if (S.allView === "inb" || S.allView === "cmp") loadInb(); return }
-  if (t.id === "nf-in" || t.id === "nf-all") {
-    S.nfilt = t.id.slice(3); ["in", "all"].forEach(f => $("nf-" + f).setAttribute("aria-pressed", S.nfilt === f)); renderInb(); return
-  }
+  if (t.id.startsWith("seg-")) { S.allView = t.id.slice(4); renderTab(); if (S.allView === "cmp") loadInb(); return }
   if (t.id === "af-done" || t.id === "af-all") {
     S.allFilt = t.id.slice(3); ["done", "all"].forEach(f => $("af-" + f).setAttribute("aria-pressed", S.allFilt === f)); renderAllItems(); return
   }
-  if (t.id === "cf-big" || t.id === "cf-all") {
-    S.cfilt = t.id.slice(3); ["big", "all"].forEach(f => $("cf-" + f).setAttribute("aria-pressed", S.cfilt === f)); renderCmp(); return
+  if (t.id === "cf-big" || t.id === "cf-in" || t.id === "cf-all") {
+    S.cfilt = t.id.slice(3); ["big", "in", "all"].forEach(f => $("cf-" + f).setAttribute("aria-pressed", S.cfilt === f)); renderCmp(); return
   }
   if (t.id === "lockBtn") { openDlg("lock", S.loc); return }
   if (t.id === "unlockBtn") { openDlg("unlock", S.loc); return }
@@ -1037,7 +999,6 @@ document.addEventListener("input", ev => {
   if (ev.target.id === "aq") { S.aq = ev.target.value; renderAllLog() }
   if (ev.target.id === "iq") { S.iq = ev.target.value; renderAllItems() }
   if (ev.target.id === "cq") { S.cq = ev.target.value; renderCmp() }
-  if (ev.target.id === "nq") { S.nq = ev.target.value; renderInb() }
   if (ev.target.id === "cname" && sheet) { sheet.cname = ev.target.value; sheet.dup = null; updateDisplay() }
 });
 document.addEventListener("change", ev => {
