@@ -141,7 +141,7 @@ async function setMonth(m) {
   S.loaded = S.server.length > 0; S.sig = "";
   merge(); renderAll();
   refresh(); loadPrev();
-  if (S.tab === "all" && S.allView === "inb") loadInb();
+  if (S.tab === "all" && (S.allView === "inb" || S.allView === "cmp")) loadInb();
 }
 /* 다른 달 품목 목록으로 입력한 기록은 규격·길이가 같은 품목에 붙인다 */
 function remap(e) {
@@ -263,6 +263,7 @@ async function loadInb() {
       : { month, rows: j.rows || [], at: j.at || "" };
   } catch { if (S.month === month && !S.inb) S.inb = { month, err: "통신이 안 되어 입고 자료를 받지 못했습니다." } }
   if (S.tab === "all" && S.allView === "inb") renderInb();
+  if (S.tab === "all" && S.allView === "cmp") renderCmp();
 }
 
 S.outbox = store.get("rm-outbox", []);
@@ -569,8 +570,8 @@ function renderTab() {
   if (S.tab === "input") renderItems();
   if (S.tab === "log") renderLog();
   if (S.tab === "all") {
-    $("seg-inb").hidden = !S.admin;  // 입고 비교는 관리자만
-    if (!S.admin && S.allView === "inb") S.allView = "items";
+    $("seg-inb").hidden = $("seg-cmp").hidden = !S.admin;  // 전월 비교·입고 비교는 관리자만
+    if (!S.admin && (S.allView === "inb" || S.allView === "cmp")) S.allView = "items";
     for (const v of ["items", "log", "cmp", "inb", "sum"]) {
       $("seg-" + v).setAttribute("aria-pressed", S.allView === v);
       $("all-" + v).hidden = S.allView !== v;
@@ -623,46 +624,60 @@ function renderInb() {
       <p>입고_품목대응표.csv 에 앱 품목을 적어 주면 다음 반영부터 비교에 들어갑니다.</p>
       ${unmatched.map(x => `<p>${esc(x.src || x.spec)} · ${fmtInt(x.qty)}本</p>`).join("")}</div>` : ""}`;
 }
-/* 전월 비교: 품목별 지난달·이번 달 수량과 차이 (차이 큰 순). 목록에 없는 품목은 비교하지 않는다 */
+/* 전월 비교 (관리자): 품목별 지난달·이번 달 수량과 차이 (차이 큰 순). 목록에 없는 품목은 비교하지 않는다.
+ * 모든 장소로 볼 때 이번 달 입고 자료가 있으면 "지난달 + 입고" 와 비교한다 (입고는 구역 구분이 없다).
+ * 지난달에 야적장2 기록이 없으면(9월처럼 야적장에 같이 적은 달) 야적장·야적장2 를 합쳐 비교한다. */
 function renderCmp() {
   const el = $("cmpView");
   if (!S.cat) return;
-  const pm = addMonth(S.month, -1);
+  const pm = addMonth(S.month, -1), mon = `${Number(S.month.split("-")[1])}월`;
   if (S.prev == null) { el.innerHTML = `<div class="empty">${esc(monthLabel(pm))} 입력을 불러오는 중입니다.</div>`; return }
   if (!S.prev.length) { el.innerHTML = `<div class="empty">${esc(monthLabel(pm))} 입력 자료가 없어 비교할 수 없습니다.</div>`; return }
   const add = (m, k, q) => m.set(k, (m.get(k) || 0) + q);
+  const prevLive = S.prev.filter(e => !e.del);
+  const yardMerged = !prevLive.some(e => e.loc === "M") && active().some(e => e.loc === "M");
+  const lk = l => yardMerged && (l === "I" || l === "M") ? "IM" : l;
+  const lname = k => k === "IM" ? "야적장+야적장2" : locName(k);
   // 구역별 합계 (위 표)
-  const locRows = LOCS.map(l => {
-    const p = S.prev.filter(e => !e.del && e.loc === l.key).reduce((s, e) => s + Number(e.qty || 0), 0);
-    const c = active().filter(e => e.loc === l.key).reduce((s, e) => s + e.qty, 0);
-    return { l, p, c };
-  });
+  const locList = yardMerged ? ["IM", ...LOCS.map(l => l.key).filter(k => k !== "I" && k !== "M")] : LOCS.map(l => l.key);
+  const locRows = locList.map(k => ({ k,
+    p: prevLive.filter(e => lk(e.loc) === k).reduce((s, e) => s + Number(e.qty || 0), 0),
+    c: active().filter(e => lk(e.loc) === k).reduce((s, e) => s + e.qty, 0) }));
   const tp = locRows.reduce((s, x) => s + x.p, 0), tc = locRows.reduce((s, x) => s + x.c, 0);
-  // 품목별 (고른 구역만)
-  const loc = S.cloc, cur = new Map(), pv = new Map();
-  for (const e of active()) if (e.r != null && (!loc || e.loc === loc)) add(cur, curKey(e), e.qty);
-  for (const e of S.prev) if (!e.del && e.r != null && (!loc || e.loc === loc) && !isHidden(e)) add(pv, prevKey(e), Number(e.qty || 0));
+  // 품목별 (고른 구역만). 입고는 모든 장소로 볼 때만 더한다
+  const loc = S.cloc ? lk(S.cloc) : "";
+  const inLoc = e => !loc || lk(e.loc) === loc;
+  const useInb = !loc && !!(S.inb && S.inb.month === S.month && S.inb.rows && S.inb.rows.length);
+  const cur = new Map(), pv = new Map(), inb = new Map();
+  for (const e of active()) if (e.r != null && inLoc(e)) add(cur, curKey(e), e.qty);
+  for (const e of prevLive) if (e.r != null && inLoc(e) && !isHidden(e)) add(pv, prevKey(e), Number(e.qty || 0));
+  if (useInb) for (const x of S.inb.rows) if (x.grp) add(inb, curKey(x), x.qty);
+  const ti = [...inb.values()].reduce((s, q) => s + q, 0);
   const byKey = new Map(S.items.map(i => [curKey(i), i]));
   const words = S.cq.toLowerCase().replace(/×/g, "x").split(/\s+/).filter(Boolean);
-  const all = [...new Set([...cur.keys(), ...pv.keys()])].map(k => {
+  const all = [...new Set([...cur.keys(), ...pv.keys(), ...inb.keys()])].map(k => {
     const [base, row] = k.split("#"), it = byKey.get(k), [grp, spec, len] = base.split("|");
-    const p = pv.get(k) || 0, c = cur.get(k) || 0;
-    return { grp, label: `${spec}${len}${row ? ` (행 ${row})` : ""}`, hay: (it ? it.hay : `${grpLabel(grp)} ${spec} ${len} ${spec}${len}`.toLowerCase().replace(/×/g, "x")), p, c, d: c - p, big: bigDiff(p, c) };
+    const p = pv.get(k) || 0, i = inb.get(k) || 0, c = cur.get(k) || 0, x = p + i;
+    return { grp, label: `${spec}${len}${row ? ` (행 ${row})` : ""}`, hay: (it ? it.hay : `${grpLabel(grp)} ${spec} ${len} ${spec}${len}`.toLowerCase().replace(/×/g, "x")), p, i, c, x, d: c - x, big: bigDiff(x, c) };
   }).filter(x => !words.length || words.every(w => x.hay.includes(w)));
   const rows = all.filter(x => S.cfilt === "all" || x.big).sort((a, b) => Math.abs(b.d) - Math.abs(a.d));
   const sign = d => (d > 0 ? "+" : "") + fmtInt(d);
-  const ratio = x => x.p && x.c ? `${Math.round(x.c / x.p * 100)}%` : x.c ? "신규" : "없음";
+  const ratio = x => x.x && x.c ? `${Math.round(x.c / x.x * 100)}%` : x.c ? "신규" : "없음";
+  const inbNote = loc ? "구역을 고르면 입고 없이 비교합니다 (입고는 구역 구분이 없음)."
+    : useInb ? `${mon} 입고를 더해 '지난달 + 입고'와 비교합니다.`
+    : S.inb && S.inb.month === S.month && !S.inb.err ? `${mon} 입고 자료가 아직 없어 입고 없이 비교합니다.` : "입고 자료를 불러오는 중이거나 받지 못해 입고 없이 비교합니다.";
   el.innerHTML = `
     <div class="tbl"><table>
       <thead><tr><th>장소</th><th>${esc(monthLabel(pm))}</th><th>이번 달</th><th>차이</th></tr></thead>
-      <tbody>${locRows.map(x => `<tr><td>${x.l.name}</td><td>${fmtInt(x.p)}</td><td>${fmtInt(x.c)}</td><td>${sign(x.c - x.p)}</td></tr>`).join("")}</tbody>
-      <tfoot><tr><td>계</td><td>${fmtInt(tp)}</td><td>${fmtInt(tc)}</td><td>${sign(tc - tp)}</td></tr></tfoot>
+      <tbody>${locRows.map(x => `<tr><td>${esc(lname(x.k))}</td><td>${fmtInt(x.p)}</td><td>${fmtInt(x.c)}</td><td>${sign(x.c - x.p)}</td></tr>`).join("")}</tbody>
+      <tfoot><tr><td>계</td><td>${fmtInt(tp)}</td><td>${fmtInt(tc)}</td><td>${sign(tc - tp)}</td></tr>
+        ${useInb ? `<tr><td>+ ${mon} 입고</td><td>${fmtInt(ti)}</td><td></td><td></td></tr><tr><td>입고 반영</td><td>${fmtInt(tp + ti)}</td><td>${fmtInt(tc)}</td><td>${sign(tc - tp - ti)}</td></tr>` : ""}</tfoot>
     </table></div>
-    <p class="cmpnote">입고·불출이 있어 전월과 다른 것은 당연합니다. 자릿수 실수처럼 크게 튄 값을 찾는 용도입니다.
-      '차이 큰 것' = 전월의 2배 이상·절반 이하, 이번에 새로 생겼거나 빠진 품목${loc ? "" : " (모든 장소 합계 기준)"}. ${all.filter(x => x.big).length}개 / 전체 ${all.length}개.</p>
+    <p class="cmpnote">${inbNote}${yardMerged ? ` ${esc(monthLabel(pm))}에는 야적장2를 따로 적지 않아 야적장+야적장2로 합쳐 비교합니다.` : ""}
+      자릿수 실수처럼 크게 튄 값을 찾는 용도입니다. '차이 큰 것' = ${useInb ? "지난달+입고" : "전월"}의 2배 이상·절반 이하, 새로 생겼거나 빠진 품목${loc ? "" : " (모든 장소 합계 기준)"}. ${all.filter(x => x.big).length}개 / 전체 ${all.length}개.</p>
     ${rows.length ? `<div class="tbl"><table>
-      <thead><tr><th>품목${loc ? ` (${esc(locName(loc))})` : ""}</th><th>전월</th><th>이번</th><th>차이</th><th>비율</th></tr></thead>
-      <tbody>${rows.slice(0, 400).map(x => `<tr><td class="itm">${esc(x.label)}<small>${esc(grpLabel(x.grp))}</small></td><td>${x.p ? fmtInt(x.p) : "–"}</td><td>${x.c ? fmtInt(x.c) : "–"}</td><td class="${x.big ? "big" : ""}">${sign(x.d)}</td><td class="${x.big ? "big" : ""}">${ratio(x)}</td></tr>`).join("")}</tbody>
+      <thead><tr><th>품목${loc ? ` (${esc(lname(loc))})` : ""}</th><th>전월</th>${useInb ? "<th>입고</th>" : ""}<th>이번</th><th>차이</th>${useInb ? "" : "<th>비율</th>"}</tr></thead>
+      <tbody>${rows.slice(0, 400).map(x => `<tr><td class="itm">${esc(x.label)}<small>${esc(grpLabel(x.grp))}</small></td><td>${x.p ? fmtInt(x.p) : "–"}</td>${useInb ? `<td>${x.i ? fmtInt(x.i) : "–"}</td>` : ""}<td>${x.c ? fmtInt(x.c) : "–"}</td><td class="${x.big ? "big" : ""}">${sign(x.d)}</td>${useInb ? "" : `<td class="${x.big ? "big" : ""}">${ratio(x)}</td>`}</tr>`).join("")}</tbody>
     </table></div>` : `<div class="empty">${S.cfilt === "big" ? "차이가 큰 품목이 없습니다." : "조건에 맞는 품목이 없습니다."}</div>`}`;
 }
 function renderItems() {
@@ -974,7 +989,7 @@ document.addEventListener("click", ev => {
   if (t.id === "mgrBtn") { openDlg("mgrs"); return }
   if (t.dataset.loc) { S.loc = t.dataset.loc; store.set("rm-loc", S.loc); renderLocBar(); renderTab(); return }
   if (t.classList.contains("tab")) { S.tab = t.id.slice(4); renderLocBar(); renderTab(); return }
-  if (t.id.startsWith("seg-")) { S.allView = t.id.slice(4); renderTab(); if (S.allView === "inb") loadInb(); return }
+  if (t.id.startsWith("seg-")) { S.allView = t.id.slice(4); renderTab(); if (S.allView === "inb" || S.allView === "cmp") loadInb(); return }
   if (t.id === "nf-in" || t.id === "nf-all") {
     S.nfilt = t.id.slice(3); ["in", "all"].forEach(f => $("nf-" + f).setAttribute("aria-pressed", S.nfilt === f)); renderInb(); return
   }
