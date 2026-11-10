@@ -25,7 +25,7 @@ const S = {
   loc: "I", tab: "input", q: "", grp: "", filt: "all", lq: "", showDel: false,
   allView: "items", iq: "", allFilt: "done", aq: "", lloc: "", showDelA: false,
   locks: {}, mgrs: {}, admin: "", me: "", code: "", outbox: [], rejected: [], sending: false,
-  prev: null, prevM: "", cq: "", cloc: "", cfilt: "big",
+  prev: null, prevM: "", cq: "", cloc: "", cfilt: "big", csign: "all", corder: "diff",
   inb: null,
 };
 const isLocked = loc => !!S.locks[loc];
@@ -616,11 +616,24 @@ function renderCmp() {
   const all = [...new Set([...cur.keys(), ...pv.keys(), ...inb.keys()])].map(k => {
     const [base, row] = k.split("#"), it = byKey.get(k), [grp, spec, len] = base.split("|");
     const p = pv.get(k) || 0, i = inb.get(k) || 0, c = cur.get(k) || 0, x = p + i;
-    return { grp, label: `${spec}${len}${row ? ` (행 ${row})` : ""}`, hay: (it ? it.hay : `${grpLabel(grp)} ${spec} ${len} ${spec}${len}`.toLowerCase().replace(/×/g, "x")), p, i, c, x, d: c - x, big: bigDiff(x, c) };
+    return { grp, label: `${spec}${len}${row ? ` (행 ${row})` : ""}`, hay: (it ? it.hay : `${grpLabel(grp)} ${spec} ${len} ${spec}${len}`.toLowerCase().replace(/×/g, "x")), p, i, c, x, d: c - x, big: bigDiff(x, c), ord: it ? it.r : 1e9 };
   }).filter(x => !words.length || words.every(w => x.hay.includes(w)));
-  const rows = all.filter(x => S.cfilt === "all" || (S.cfilt === "in" ? x.i > 0 : x.big)).sort((a, b) => Math.abs(b.d) - Math.abs(a.d));
+  // 위 필터(차이 큰 것/입고 품목/전체)로 고른 뒤, 아래 필터로 + (실사가 많음) / − (실사가 적음) 를 나눈다
+  const picked = all.filter(x => S.cfilt === "all" || (S.cfilt === "in" ? x.i > 0 : x.big));
+  const nPlus = picked.filter(x => x.d > 0).length, nMinus = picked.filter(x => x.d < 0).length;
+  $("cs-all").textContent = `± 모두 ${picked.length}`; $("cs-plus").textContent = `+ 실사가 많음 ${nPlus}`; $("cs-minus").textContent = `− 실사가 적음 ${nMinus}`;
+  // 정렬: 차이 큰 순, 또는 집계표 품목 순(품목군 제목 줄을 넣는다)
+  const rows = picked.filter(x => S.csign === "all" || (S.csign === "plus" ? x.d > 0 : x.d < 0))
+    .sort(S.corder === "item" ? (a, b) => a.ord - b.ord || a.label.localeCompare(b.label) : (a, b) => Math.abs(b.d) - Math.abs(a.d));
+  const ncol = 5;  // 품목·전월·(입고 또는 비율)·이번·차이
+  let lastGrp = null;
+  const grpRow = x => {
+    if (S.corder !== "item" || x.grp === lastGrp) return "";
+    lastGrp = x.grp;
+    return `<tr class="grprow"><td colspan="${ncol}">${esc(grpLabel(x.grp))}</td></tr>`;
+  };
   const unmatched = useInb ? S.inb.rows.filter(x => !x.grp) : [];
-  const emptyMsg = S.cfilt === "in" ? (useInb ? "조건에 맞는 입고 품목이 없습니다." : "입고 품목은 '모든 장소'로 볼 때, 그달 입고 자료가 있을 때만 볼 수 있습니다.")
+  const emptyMsg = picked.length ? (S.csign === "plus" ? "실사가 더 많은 품목이 없습니다." : "실사가 더 적은 품목이 없습니다.") : S.cfilt === "in" ? (useInb ? "조건에 맞는 입고 품목이 없습니다." : "입고 품목은 '모든 장소'로 볼 때, 그달 입고 자료가 있을 때만 볼 수 있습니다.")
     : S.cfilt === "big" ? "차이가 큰 품목이 없습니다." : "조건에 맞는 품목이 없습니다.";
   const sign = d => (d > 0 ? "+" : "") + fmtInt(d);
   const ratio = x => x.x && x.c ? `${Math.round(x.c / x.x * 100)}%` : x.c ? "신규" : "없음";
@@ -638,7 +651,7 @@ function renderCmp() {
       자릿수 실수처럼 크게 튄 값을 찾는 용도입니다. '차이 큰 것' = ${useInb ? "지난달+입고" : "전월"}의 2배 이상·절반 이하, 새로 생겼거나 빠진 품목${loc ? "" : " (모든 장소 합계 기준)"}. ${all.filter(x => x.big).length}개 / 전체 ${all.length}개.</p>
     ${rows.length ? `<div class="tbl"><table>
       <thead><tr><th>품목${loc ? ` (${esc(lname(loc))})` : ""}</th><th>전월</th>${useInb ? "<th>입고</th>" : ""}<th>이번</th><th>차이</th>${useInb ? "" : "<th>비율</th>"}</tr></thead>
-      <tbody>${rows.slice(0, 400).map(x => `<tr><td class="itm">${esc(x.label)}<small>${esc(grpLabel(x.grp))}</small></td><td>${x.p ? fmtInt(x.p) : "–"}</td>${useInb ? `<td>${x.i ? fmtInt(x.i) : "–"}</td>` : ""}<td>${x.c ? fmtInt(x.c) : "–"}</td><td class="${x.big ? "big" : ""}">${sign(x.d)}</td>${useInb ? "" : `<td class="${x.big ? "big" : ""}">${ratio(x)}</td>`}</tr>`).join("")}</tbody>
+      <tbody>${rows.slice(0, 400).map(x => `${grpRow(x)}<tr><td class="itm">${esc(x.label)}${S.corder === "item" ? "" : `<small>${esc(grpLabel(x.grp))}</small>`}</td><td>${x.p ? fmtInt(x.p) : "–"}</td>${useInb ? `<td>${x.i ? fmtInt(x.i) : "–"}</td>` : ""}<td>${x.c ? fmtInt(x.c) : "–"}</td><td class="${x.big ? "big" : ""}">${sign(x.d)}</td>${useInb ? "" : `<td class="${x.big ? "big" : ""}">${ratio(x)}</td>`}</tr>`).join("")}</tbody>
     </table></div>` : `<div class="empty">${emptyMsg}</div>`}
     ${useInb ? `<p class="cmpnote">입고 자료: ${S.inb.at ? fmtTime(S.inb.at) + " 반영" : ""}. 차이가 마이너스면 그만큼 쓴 것(불출), <b class="dupwarn">플러스</b>면 입고·지난달 실사 누락이나 입력 실수일 수 있습니다.</p>` : ""}
     ${unmatched.length ? `<div class="card"><h2>앱 품목에 대응 안 된 입고 ${unmatched.length}종 · ${fmtInt(unmatched.reduce((s, x) => s + x.qty, 0))}本</h2>
@@ -957,6 +970,12 @@ document.addEventListener("click", ev => {
   if (t.id.startsWith("seg-")) { S.allView = t.id.slice(4); renderTab(); if (S.allView === "cmp") loadInb(); return }
   if (t.id === "af-done" || t.id === "af-all") {
     S.allFilt = t.id.slice(3); ["done", "all"].forEach(f => $("af-" + f).setAttribute("aria-pressed", S.allFilt === f)); renderAllItems(); return
+  }
+  if (t.id === "co-diff" || t.id === "co-item") {
+    S.corder = t.id.slice(3); ["diff", "item"].forEach(f => $("co-" + f).setAttribute("aria-pressed", S.corder === f)); renderCmp(); return
+  }
+  if (t.id === "cs-all" || t.id === "cs-plus" || t.id === "cs-minus") {
+    S.csign = t.id.slice(3); ["all", "plus", "minus"].forEach(f => $("cs-" + f).setAttribute("aria-pressed", S.csign === f)); renderCmp(); return
   }
   if (t.id === "cf-big" || t.id === "cf-in" || t.id === "cf-all") {
     S.cfilt = t.id.slice(3); ["big", "in", "all"].forEach(f => $("cf-" + f).setAttribute("aria-pressed", S.cfilt === f)); renderCmp(); return
