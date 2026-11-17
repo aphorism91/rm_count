@@ -147,8 +147,10 @@ async function loadCatalog(c) {
 function setGrpBtn() { const b = $("grpBtn"); if (b) b.firstChild.textContent = S.grp ? grpLabel(S.grp) : "전체 품목군" }
 function openGrp() {
   const { byItemLoc } = tallies();
-  const groups = [...new Set(S.items.map(i => i.grp))];
-  const cnt = g => { const its = S.items.filter(i => !g || i.grp === g); return `${its.filter(i => byItemLoc.get(`${i.r}|${S.loc}`)).length}/${its.length}` };
+  // 이 구역에서 숨긴 품목은 세지 않는다 (입력이 있으면 센다)
+  const vis_ = S.items.filter(i => !hiddenAt(i, S.loc) || byItemLoc.get(`${i.r}|${S.loc}`));
+  const groups = [...new Set(vis_.map(i => i.grp))];
+  const cnt = g => { const its = vis_.filter(i => !g || i.grp === g); return `${its.filter(i => byItemLoc.get(`${i.r}|${S.loc}`)).length}/${its.length}` };
   const opt = (g, label) => `<button class="gopt" data-gopt="${esc(g)}" aria-pressed="${S.grp === g}"><span>${esc(label)}</span><small>${cnt(g)}</small></button>`;
   $("grpRoot").innerHTML = `
     <div class="scrim" data-act="grpclose"></div>
@@ -159,6 +161,69 @@ function openGrp() {
   document.querySelector(".gopt[aria-pressed=true]")?.scrollIntoView({ block: "center" });
 }
 function closeGrp() { $("grpRoot").innerHTML = "" }
+
+/* ---------- 구역별 숨김 품목: 관리자가 정한 '그 구역에 없는 품목·길이'는 입력 목록에서 숨긴다 ----------
+ * 구글 시트 '구역품목' 탭에 장소별로 저장 (품목군|규격|길이). 이미 입력이 있거나 검색하면 숨긴 품목도 보인다. */
+S.hide = {}; let hideSet = {};
+function setHide(h) {
+  S.hide = h || {};
+  hideSet = Object.fromEntries(Object.entries(S.hide).map(([k, v]) => [k, new Set(v)]));
+}
+const hiddenAt = (it, loc) => !!hideSet[loc]?.has(itemKey(it));
+let vis = null;  // 관리자 설정 화면 상태 {loc, hidden:Set, dirty, q, closeArm}
+function openVis(loc) {
+  vis = { loc: loc || S.loc, hidden: new Set(S.hide[loc || S.loc] || []), dirty: false, q: "", closeArm: false };
+  drawVis();
+}
+function drawVis() {
+  if (!vis) { $("visRoot").innerHTML = ""; return }
+  const shown = S.items.filter(it => !vis.hidden.has(itemKey(it))).length;
+  $("visRoot").innerHTML = `
+    <div class="vispanel" role="dialog" aria-modal="true" aria-label="구역별 품목·길이">
+      <div class="vis-h"><b>구역별 품목·길이</b><button class="x" data-act="visclose" aria-label="닫기">✕</button></div>
+      <div class="vis-locs">${LOCS.map(l => `<button class="loc" data-visloc="${l.key}" aria-pressed="${vis.loc === l.key}">${l.name}<small>${(S.hide[l.key] || []).length ? "숨김 " + S.hide[l.key].length : ""}</small></button>`).join("")}</div>
+      <p class="vis-note">끈 품목은 <b>${esc(locName(vis.loc))}</b> 입력 목록에서 숨깁니다. 검색하면 나오고, 집계 엑셀에는 영향이 없습니다. 길이 버튼을 누르면 그 품목군의 그 길이를 한 번에 켜고 끕니다.</p>
+      <div class="vis-bar"><input id="visq" type="search" placeholder="품목군·규격·길이 검색" value="${esc(vis.q)}" autocomplete="off"><span id="visCnt">보임 ${shown} / ${S.items.length}</span></div>
+      <div class="vis-list" id="visList"></div>
+      <div class="vis-btns"><button class="btn ghost" data-act="visclose">닫기</button><button class="btn" data-act="vissave" ${vis.dirty ? "" : "disabled"}>${vis.dirty ? "저장" : "저장됨"}</button></div>
+    </div>`;
+  drawVisList();
+}
+function drawVisList() {
+  const el = $("visList"); if (!el) return;
+  const top = el.scrollTop;
+  const words = vis.q.toLowerCase().replace(/×/g, "x").split(/\s+/).filter(Boolean);
+  const items = S.items.filter(it => !words.length || words.every(w => it.hay.includes(w)));
+  const groups = [...new Set(items.map(i => i.grp))];
+  el.innerHTML = groups.map(g => {
+    const its = items.filter(i => i.grp === g);
+    const lens = [...new Set(its.map(i => i.len))].sort((a, b) => (a ?? 0) - (b ?? 0));
+    const st = list => { const on = list.filter(i => !vis.hidden.has(itemKey(i))).length; return on === list.length ? "on" : on ? "part" : "off" };
+    return `<section><div class="vis-g"><b>${esc(grpLabel(g))}</b><button class="linkbtn" data-visgrp="${esc(g)}">${st(its) === "on" ? "모두 끄기" : "모두 켜기"}</button></div>
+      <div class="vis-lens">${lens.map(l => `<button class="vlen ${st(its.filter(i => i.len === l))}" data-vislen="${esc(g)}" data-len="${l ?? ""}">${l ?? "길이 없음"}</button>`).join("")}</div>
+      ${its.map(it => `<label class="vis-it${vis.hidden.has(itemKey(it)) ? " off" : ""}"><input type="checkbox" data-viskey="${esc(itemKey(it))}" ${vis.hidden.has(itemKey(it)) ? "" : "checked"}><span>${esc(it.spec)}<b>${it.len ?? ""}</b></span></label>`).join("")}</section>`;
+  }).join("") || `<div class="empty">검색에 맞는 품목이 없습니다.</div>`;
+  el.scrollTop = top;
+  const c = $("visCnt"); if (c) c.textContent = `보임 ${S.items.filter(it => !vis.hidden.has(itemKey(it))).length} / ${S.items.length}`;
+  const sv = document.querySelector('[data-act="vissave"]'); if (sv) { sv.disabled = !vis.dirty; sv.textContent = vis.dirty ? "저장" : "저장됨" }
+}
+function visSet(list, on) { list.forEach(it => on ? vis.hidden.delete(itemKey(it)) : vis.hidden.add(itemKey(it))); vis.dirty = true; vis.closeArm = false; drawVisList() }
+async function saveVis(btn) {
+  if (!vis || !vis.dirty) return;
+  btn.disabled = true; btn.textContent = "저장 중…";
+  let j;
+  try { j = await apiPost({ action: "sethide", loc: vis.loc, keys: [...vis.hidden], by: S.me }) } catch { j = { ok: false, error: "net" } }
+  if (!vis) return;
+  if (j.ok === false) {
+    toast(j.error === "net" ? "통신이 안 됩니다. 연결된 곳에서 다시 저장해 주세요." : j.error === "action" ? "저장소가 아직 새 버전이 아닙니다 (Code.gs 새 버전 배포 필요)." : DLG_ERR[j.error] || `저장하지 못했습니다 (${j.error}).`);
+    if (j.error === "admin" || j.error === "noadmin") { vis = null; drawVis(); adminOff(); return }
+    drawVisList(); return;
+  }
+  setHide(j.hide); store.set("rm-hide", S.hide);
+  vis.dirty = false; vis.closeArm = false;
+  toast(`${locName(vis.loc)} 품목 설정을 저장했습니다`);
+  drawVis(); renderAll();
+}
 async function setMonth(m) {
   S.month = m; store.set("rm-month", m);
   const c = catalogFor(m);
@@ -223,7 +288,7 @@ function merge() {
 /* 데이터가 바뀌었을 때만 다시 그린다 (주기적으로 새로 받아도 화면이 깜빡이지 않게) */
 function mergeAndRender(force) {
   merge();
-  const sig = JSON.stringify([S.entries, S.locks, S.mgrs, S.me, S.admin]);
+  const sig = JSON.stringify([S.entries, S.locks, S.mgrs, S.me, S.admin, S.hide]);
   if (force || sig !== S.sig) { S.sig = sig; renderAll() } else { renderBanners(); renderSync() }
 }
 
@@ -238,6 +303,7 @@ async function refresh() {
     S.server = j.entries || [];
     S.locks = j.locks || {};
     S.mgrs = j.mgrs || {};
+    if (j.hide) { setHide(j.hide); store.set("rm-hide", S.hide) }
     store.set("rm-cache-" + month, S.server);
     store.set("rm-locks-" + month, S.locks);
     store.set("rm-mgrs-" + month, S.mgrs);
@@ -763,27 +829,32 @@ function renderItems() {
   if (!S.cat) return;
   const { byItemLoc, byItem } = tallies();
   const words = S.q.toLowerCase().replace(/×/g, "x").split(/\s+/).filter(Boolean);
+  // 관리자가 이 구역에서 숨긴 품목: 이미 입력이 있거나 검색할 때만 보인다
+  const nHidden = S.items.filter(it => hiddenAt(it, S.loc)).length;
   const rows = S.items.filter(it => {
     if (S.grp && it.grp !== S.grp) return false;
     if (words.length && !words.every(w => it.hay.includes(w))) return false;
     const hasHere = byItemLoc.has(`${it.r}|${S.loc}`);
+    if (!hasHere && !words.length && hiddenAt(it, S.loc)) return false;
     if (S.filt === "todo" && hasHere) return false;
     if (S.filt === "done" && !hasHere) return false;
     return true;
   });
-  if (!rows.length) { $("itemList").innerHTML = `<div class="empty">조건에 맞는 품목이 없습니다.<br>목록에 없는 품목이면 아래 [목록에 없는 품목 입력]을 쓰세요.</div>`; return }
+  const hideNote = nHidden ? `<div class="hidenote">${esc(locName(S.loc))}에 없는 품목 ${nHidden}개는 목록에서 숨겼습니다. 검색하면 나옵니다.</div>` : "";
+  if (!rows.length) { $("itemList").innerHTML = hideNote + `<div class="empty">조건에 맞는 품목이 없습니다.<br>목록에 없는 품목이면 아래 [목록에 없는 품목 입력]을 쓰세요.</div>`; return }
   const grpCount = {}, grpDone = {};
   for (const it of rows) {
     grpCount[it.grp] = (grpCount[it.grp] || 0) + 1;
     if (byItemLoc.has(`${it.r}|${S.loc}`)) grpDone[it.grp] = (grpDone[it.grp] || 0) + 1;
   }
-  let html = "", g = null;
+  let html = hideNote, g = null;
   for (const it of rows) {
     if (it.grp !== g) {
       if (g !== null) html += `</div></section>`;
       g = it.grp;
       html += `<section><div class="grp"><span>${esc(grpLabel(g))}</span><small>${grpDone[g] || 0}/${grpCount[g]}</small></div><div class="list">`;
     }
+    const hidTag = hiddenAt(it, S.loc) ? `<span class="hidtag">${esc(locName(S.loc))} 목록에서 숨김</span>` : "";
     const hasHere = byItemLoc.has(`${it.r}|${S.loc}`);
     const here = byItemLoc.get(`${it.r}|${S.loc}`) || 0;
     const all = byItem.get(it.r) || 0;
@@ -793,7 +864,7 @@ function renderItems() {
     html += `<button class="item${hasHere ? " done" : ""}" data-row="${it.r}">
       <span class="spec">${esc(it.spec)}<span class="len">${it.len ?? ""}</span></span>
       <span class="qty${hasHere ? "" : " zero"}">${hasHere ? fmtInt(here) : "–"}<small>${all && all !== here ? "전체 " + fmtInt(all) : locName(S.loc)}</small></span>
-      <span class="meta">${pvTag}${S.admin ? itemMeta(it) : ""}</span>
+      <span class="meta">${hidTag}${pvTag}${S.admin ? itemMeta(it) : ""}</span>
     </button>`;
   }
   $("itemList").innerHTML = html + `</div></section>`;
@@ -883,6 +954,7 @@ function renderSum() {
       <p>${esc(monthLabel(S.month))} 구역 담당자를 정합니다. 담당자는 달마다 따로 정하고, 정하지 않은 구역은 관리자만 입력합니다.</p>
       <button class="btn" id="mgrBtn">구역 담당자 지정</button>
       <button class="btn" id="pinBtn">담당자 PIN 정하기</button>
+      <button class="btn" id="visBtn">구역별 품목·길이</button>
       <button class="btn ghost" id="adminOffBtn">관리자 모드 끄기</button>
     </div>` : ""}
     <div class="card">
@@ -1075,6 +1147,25 @@ document.addEventListener("click", ev => {
   if (t.id === "mgrBtn") { openDlg("mgrs"); return }
   if (t.id === "pinBtn") { openDlg("pins"); return }
   if (t.id === "grpBtn") { openGrp(); return }
+  if (t.id === "visBtn") { openVis(S.loc); return }
+  if (vis) {
+    if (t.dataset.act === "visclose") {
+      if (vis.dirty && !vis.closeArm) { vis.closeArm = true; toast("저장하지 않은 변경이 있습니다. 한 번 더 누르면 저장하지 않고 닫습니다."); return }
+      vis = null; drawVis(); return
+    }
+    if (t.dataset.act === "vissave") { saveVis(t); return }
+    if (t.dataset.visloc) {
+      if (vis.dirty) { toast("먼저 [저장]을 눌러 주세요"); return }
+      openVis(t.dataset.visloc); return
+    }
+    if (t.dataset.visgrp !== undefined) { const its = S.items.filter(i => i.grp === t.dataset.visgrp); visSet(its, its.some(i => vis.hidden.has(itemKey(i)))); return }
+    if (t.dataset.vislen !== undefined) {
+      const len = t.dataset.len === "" ? null : Number(t.dataset.len);
+      const its = S.items.filter(i => i.grp === t.dataset.vislen && (i.len ?? null) === len);
+      visSet(its, its.some(i => vis.hidden.has(itemKey(i)))); return
+    }
+    return;
+  }
   if (t.dataset.act === "grpclose") { closeGrp(); return }
   if (t.dataset.gopt !== undefined) { S.grp = t.dataset.gopt; closeGrp(); setGrpBtn(); renderItems(); window.scrollTo({ top: 0 }); return }
   if (t.id === "bigBtn" || t.id === "bigBtn2") { S.big = !S.big; store.set("rm-big", S.big); applyBig(); if (S.tab === "all") renderTab(); toast(S.big ? "글자를 크게 했습니다" : "글자를 보통으로 했습니다"); return }
@@ -1131,9 +1222,15 @@ document.addEventListener("input", ev => {
   if (ev.target.id === "aq") { S.aq = ev.target.value; renderAllLog() }
   if (ev.target.id === "iq") { S.iq = ev.target.value; renderAllItems() }
   if (ev.target.id === "cq") { S.cq = ev.target.value; renderCmp() }
+  if (ev.target.id === "visq" && vis) { vis.q = ev.target.value; drawVisList() }
   if (ev.target.id === "cname" && sheet) { sheet.cname = ev.target.value; sheet.dup = null; updateDisplay() }
 });
 document.addEventListener("change", ev => {
+  if (ev.target.dataset?.viskey && vis) {
+    const k = ev.target.dataset.viskey;
+    ev.target.checked ? vis.hidden.delete(k) : vis.hidden.add(k);
+    vis.dirty = true; vis.closeArm = false; drawVisList(); return
+  }
   if (ev.target.id === "monthSel") setMonth(ev.target.value).catch(() => toast("품목 목록을 불러오지 못했습니다. 새로고침해 주세요."));
   if (ev.target.id === "lloc") { S.lloc = ev.target.value; renderAllLog() }
   if (ev.target.id === "cloc") { S.cloc = ev.target.value; renderCmp() }
@@ -1177,6 +1274,7 @@ if ("serviceWorker" in navigator && location.protocol === "https:") {
   if (!LOCS.some(l => l.key === S.loc)) S.loc = "I";
   S.me = store.get("rm-name", ""); S.code = store.get("rm-code", ""); S.admin = store.get("rm-admin", ""); S.pin = store.get("rm-pin", "");
   S.big = store.get("rm-big", false); applyBig();
+  setHide(store.get("rm-hide", {}));
   $("lloc").insertAdjacentHTML("beforeend", LOCS.map(l => `<option value="${l.key}">${l.name}</option>`).join(""));
   $("cloc").insertAdjacentHTML("beforeend", LOCS.map(l => `<option value="${l.key}">${l.name}</option>`).join(""));
   try { await loadCatalogs() } catch { $("itemList").innerHTML = `<div class="empty">품목 목록을 불러오지 못했습니다. 통신을 확인하고 새로고침해 주세요.</div>`; return }
