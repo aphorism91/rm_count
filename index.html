@@ -217,6 +217,14 @@ td.itm small { display: block; color: var(--muted); font-size: 11.5px }
 .dlg .linkbtn { align-self: flex-start; border: none; background: none; color: var(--accent); font-size: 13px; padding: 2px 0; text-decoration: underline }
 .dlg .dlg-body { display: flex; flex-direction: column; gap: 8px; max-height: 60vh; overflow: auto }
 .top .right { display: flex; flex-direction: column; align-items: flex-end; gap: 2px }
+.top .subrow { display: flex; align-items: center; gap: 6px }
+/* 글자 크게: 화면 전체를 1.2배로 (이 폰에만 기억) */
+html.big body { zoom: 1.2 }
+.bigbtn { border: 1px solid var(--line); background: var(--surface); color: var(--fg); border-radius: 6px; padding: 1px 7px; font-size: 13px; font-weight: 700; line-height: 18px }
+.bigbtn b { font-size: 10px; vertical-align: super; margin-left: 1px }
+.bigbtn[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-fg) }
+.item .meta:empty { display: none }
+.duptag { display: inline-block; margin-right: 6px; padding: 0 6px; border-radius: 4px; background: var(--accent-soft); color: var(--accent); font-family: var(--font-body); font-size: 11.5px; font-weight: 700; line-height: 17px }
 
 /* 구역 잠금 */
 .ico { width: 13px; height: 13px; vertical-align: -1px; margin-right: 4px; flex: none }
@@ -252,7 +260,7 @@ td.itm small { display: block; color: var(--muted); font-size: 11.5px }
 
 <header>
   <div class="wrap">
-    <div class="top"><h1>진천2 원자재 실사</h1><div class="right"><select id="monthSel" class="month" aria-label="조사월"><option>불러오는 중</option></select><span class="adm" id="admBadge" hidden>관리자</span><span class="sync" id="sync"></span></div></div>
+    <div class="top"><h1>진천2 원자재 실사</h1><div class="right"><select id="monthSel" class="month" aria-label="조사월"><option>불러오는 중</option></select><div class="subrow"><span class="adm" id="admBadge" hidden>관리자</span><span class="sync" id="sync"></span><button type="button" class="bigbtn" id="bigBtn" aria-pressed="false" aria-label="글자 크게">가<b>+</b></button></div></div></div>
     <div class="locs" id="locBar" role="group" aria-label="조사 장소"></div>
   </div>
   <div class="tabs" role="tablist">

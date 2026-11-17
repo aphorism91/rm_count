@@ -82,6 +82,21 @@ const entryLabel = e => {
   return `${e.grp || ""} ${e.spec || ""}${e.len || ""} (행 ${e.r})`;
 };
 const whoName = n => n || "이름 없음";
+/* 품목코드·단위중량·집계표 행: 관리자 모드에서만 보여준다 (담당자 화면은 품목명·길이만) */
+const itemMeta = it => `${esc(it.code || "코드 없음")} · ${it.uw ?? "-"} kg/m · 행 ${it.r}`;
+/* 집계표에 규격·길이가 똑같은 줄(판도라 59.5×4800 등)은 담당자도 구분할 수 있게 ①② 를 붙인다 */
+function dupTag(it) {
+  const k = itemKey(it);
+  if (!dupKeys.has(k)) return "";
+  const n = S.items.filter(i => itemKey(i) === k).findIndex(i => i.r === it.r) + 1;
+  return `<span class="duptag">같은 규격 ${"①②③④⑤"[n - 1] || n}</span>`;
+}
+/* 글자 크게 (이 폰에만 기억) */
+function applyBig() {
+  document.documentElement.classList.toggle("big", !!S.big);
+  const b = document.getElementById("bigBtn");
+  if (b) { b.setAttribute("aria-pressed", String(!!S.big)); b.setAttribute("aria-label", S.big ? "글자 보통으로" : "글자 크게") }
+}
 
 /* ---------- 품목 목록·조사월 ---------- */
 /* 월 목록: 품목 목록(집계표)이 있는 달부터 다음 달까지. 그달 품목 목록이 없으면 가장 가까운 이전 달 목록을 쓴다 */
@@ -763,7 +778,7 @@ function renderItems() {
     html += `<button class="item${hasHere ? " done" : ""}" data-row="${it.r}">
       <span class="spec">${esc(it.spec)}<span class="len">${it.len ?? ""}</span></span>
       <span class="qty${hasHere ? "" : " zero"}">${hasHere ? fmtInt(here) : "–"}<small>${all && all !== here ? "전체 " + fmtInt(all) : locName(S.loc)}</small></span>
-      <span class="meta">${pvTag}${esc(it.code || "코드 없음")} · ${it.uw ?? "-"} kg/m · 행 ${it.r}</span>
+      <span class="meta">${pvTag}${dupTag(it)}${S.admin ? itemMeta(it) : ""}</span>
     </button>`;
   }
   $("itemList").innerHTML = html + `</div></section>`;
@@ -861,6 +876,7 @@ function renderSum() {
       <p>${S.admin ? "모든 구역에 입력·수정·삭제하고 잠금·해제할 수 있습니다."
         : (() => { const mine = LOCS.filter(l => isMgr(l.key)).map(l => l.name); return mine.length ? `담당 구역: <b>${esc(mine.join(", "))}</b> · 담당 구역에 입력하고, 내가 넣은 기록만 수정·삭제할 수 있습니다.${S.pin ? "" : " <b>PIN이 없습니다.</b> 아래 [이름·현장 코드 바꾸기]에서 관리자에게 받은 PIN을 넣어 주세요."}` : "이번 달 담당 구역이 없습니다. 담당자 목록의 이름과 위 입력자 이름이 똑같아야 합니다." })()}</p>
       <button class="btn ghost" id="openSetup">이름·현장 코드 바꾸기</button>
+      <button class="btn ghost" id="bigBtn2">${S.big ? "글자 보통으로" : "글자 크게"}</button>
       ${S.admin ? "" : `<button class="btn ghost" id="adminBtn">관리자 모드</button>`}
     </div>`;
 }
@@ -955,7 +971,7 @@ function drawSheet() {
   const anim = sheet.fresh ? " anim" : "";
   sheet.fresh = false;
   const head = it
-    ? `<h2>${esc(grpLabel(it.grp))} · ${esc(it.spec)}<span class="num">${it.len ?? ""}</span></h2><div class="meta">${esc(it.code || "코드 없음")} · ${it.uw ?? "-"} kg/m · 행 ${it.r}</div>`
+    ? `<h2>${esc(grpLabel(it.grp))} · ${esc(it.spec)}<span class="num">${it.len ?? ""}</span></h2>${S.admin || dupTag(it) ? `<div class="meta">${dupTag(it)}${S.admin ? itemMeta(it) : ""}</div>` : ""}`
     : `<h2>목록에 없는 품목</h2><div class="meta">집계표 '당월 추가품목'으로 따로 정리됩니다</div>`;
   $("sheetRoot").innerHTML = `
     <div class="scrim" data-act="close"></div>
@@ -1043,6 +1059,7 @@ document.addEventListener("click", ev => {
   if (t.id === "adminOffBtn") { adminOff("관리자 모드를 껐습니다"); return }
   if (t.id === "mgrBtn") { openDlg("mgrs"); return }
   if (t.id === "pinBtn") { openDlg("pins"); return }
+  if (t.id === "bigBtn" || t.id === "bigBtn2") { S.big = !S.big; store.set("rm-big", S.big); applyBig(); if (S.tab === "all") renderTab(); toast(S.big ? "글자를 크게 했습니다" : "글자를 보통으로 했습니다"); return }
   if (t.dataset.loc) { S.loc = t.dataset.loc; store.set("rm-loc", S.loc); renderLocBar(); renderTab(); return }
   if (t.classList.contains("tab")) { S.tab = t.id.slice(4); renderLocBar(); renderTab(); return }
   if (t.id.startsWith("seg-")) { S.allView = t.id.slice(4); renderTab(); if (S.allView === "cmp") loadInb(); return }
@@ -1141,6 +1158,7 @@ if ("serviceWorker" in navigator && location.protocol === "https:") {
   S.loc = store.get("rm-loc", "I");
   if (!LOCS.some(l => l.key === S.loc)) S.loc = "I";
   S.me = store.get("rm-name", ""); S.code = store.get("rm-code", ""); S.admin = store.get("rm-admin", ""); S.pin = store.get("rm-pin", "");
+  S.big = store.get("rm-big", false); applyBig();
   $("lloc").insertAdjacentHTML("beforeend", LOCS.map(l => `<option value="${l.key}">${l.name}</option>`).join(""));
   $("cloc").insertAdjacentHTML("beforeend", LOCS.map(l => `<option value="${l.key}">${l.name}</option>`).join(""));
   try { await loadCatalogs() } catch { $("itemList").innerHTML = `<div class="empty">품목 목록을 불러오지 못했습니다. 통신을 확인하고 새로고침해 주세요.</div>`; return }
