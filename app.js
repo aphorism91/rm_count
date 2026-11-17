@@ -84,13 +84,6 @@ const entryLabel = e => {
 const whoName = n => n || "이름 없음";
 /* 품목코드·단위중량·집계표 행: 관리자 모드에서만 보여준다 (담당자 화면은 품목명·길이만) */
 const itemMeta = it => `${esc(it.code || "코드 없음")} · ${it.uw ?? "-"} kg/m · 행 ${it.r}`;
-/* 집계표에 규격·길이가 똑같은 줄(판도라 59.5×4800 등)은 담당자도 구분할 수 있게 ①② 를 붙인다 */
-function dupTag(it) {
-  const k = itemKey(it);
-  if (!dupKeys.has(k)) return "";
-  const n = S.items.filter(i => itemKey(i) === k).findIndex(i => i.r === it.r) + 1;
-  return `<span class="duptag">같은 규격 ${"①②③④⑤"[n - 1] || n}</span>`;
-}
 /* 글자 크게 (이 폰에만 기억) */
 function applyBig() {
   document.documentElement.classList.toggle("big", !!S.big);
@@ -135,16 +128,37 @@ async function loadCatalog(c) {
   S.byRow = new Map();
   S.items = cat.items.map(([r, grp, spec, len, uw, code]) => ({ r, grp, spec, len, uw, code,
     hay: `${grpLabel(grp)} ${spec} ${len ?? ""} ${spec}${len ?? ""} ${code}`.toLowerCase().replace(/×/g, "x") })).filter(it => !isHidden(it));
+  /* 집계표에 규격·길이가 똑같은 줄(판도라 59.5×4800 9·10행 등)은 앱에서 한 줄로 보여주고 앞 줄에 저장한다.
+   * 뒤 줄로 들어온 예전 기록도 앞 줄에 합쳐 보인다 (S.alias: 뒤 행 → 앞 행) */
+  const first = new Map();
+  S.alias = new Map();
+  S.items = S.items.filter(it => {
+    const k = itemKey(it);
+    if (first.has(k)) { S.alias.set(it.r, first.get(k).r); S.byRow.set(it.r, first.get(k)); return false }
+    first.set(k, it); return true;
+  });
   S.items.forEach(it => S.byRow.set(it.r, it));
-  const seen = new Set();
-  dupKeys = new Set();
-  S.items.forEach(it => { const k = itemKey(it); if (seen.has(k)) dupKeys.add(k); seen.add(k) });
+  dupKeys = new Set();  // 한 줄로 합쳤으므로 지난달 비교도 규격·길이로만 맞춘다
   if (S.prev) setPrev(S.prevM, S.prev);  // 품목 목록이 바뀌면 지난달 색인도 다시 만든다
-  const groups = [...new Set(S.items.map(i => i.grp))];
-  $("grpSel").innerHTML = `<option value="">전체 품목군</option>` + groups.map(g => `<option value="${esc(g)}">${esc(grpLabel(g))}</option>`).join("");
-  if (!groups.includes(S.grp)) S.grp = "";
-  $("grpSel").value = S.grp;
+  if (!S.items.some(i => i.grp === S.grp)) S.grp = "";
+  setGrpBtn();
 }
+/* ---------- 품목군 고르기: 누르면 바로 적용되는 목록 (폰 기본 선택창은 '확인'을 눌러야 해서) ---------- */
+function setGrpBtn() { const b = $("grpBtn"); if (b) b.firstChild.textContent = S.grp ? grpLabel(S.grp) : "전체 품목군" }
+function openGrp() {
+  const { byItemLoc } = tallies();
+  const groups = [...new Set(S.items.map(i => i.grp))];
+  const cnt = g => { const its = S.items.filter(i => !g || i.grp === g); return `${its.filter(i => byItemLoc.get(`${i.r}|${S.loc}`)).length}/${its.length}` };
+  const opt = (g, label) => `<button class="gopt" data-gopt="${esc(g)}" aria-pressed="${S.grp === g}"><span>${esc(label)}</span><small>${cnt(g)}</small></button>`;
+  $("grpRoot").innerHTML = `
+    <div class="scrim" data-act="grpclose"></div>
+    <div class="gpick" role="dialog" aria-modal="true" aria-label="품목군 고르기">
+      <div class="gpick-h"><b>품목군</b><small>${esc(locName(S.loc))} 입력 품목 수</small><button class="x" data-act="grpclose" aria-label="닫기">✕</button></div>
+      <div class="gpick-list">${opt("", "전체 품목군")}${groups.map(g => opt(g, grpLabel(g))).join("")}</div>
+    </div>`;
+  document.querySelector(".gopt[aria-pressed=true]")?.scrollIntoView({ block: "center" });
+}
+function closeGrp() { $("grpRoot").innerHTML = "" }
 async function setMonth(m) {
   S.month = m; store.set("rm-month", m);
   const c = catalogFor(m);
@@ -160,6 +174,7 @@ async function setMonth(m) {
 }
 /* 다른 달 품목 목록으로 입력한 기록은 규격·길이가 같은 품목에 붙인다 */
 function remap(e) {
+  if (e.r != null && S.alias?.has(e.r) && (!e.cm || e.cm === S.cat.month)) return { ...e, r0: e.r, r: S.alias.get(e.r) };
   if (e.r == null || !e.cm || e.cm === S.cat.month) return e;
   const it = S.items.find(i => i.grp === e.grp && i.spec === e.spec && i.len === e.len);
   return it ? { ...e, r0: e.r, r: it.r } : e;
@@ -778,7 +793,7 @@ function renderItems() {
     html += `<button class="item${hasHere ? " done" : ""}" data-row="${it.r}">
       <span class="spec">${esc(it.spec)}<span class="len">${it.len ?? ""}</span></span>
       <span class="qty${hasHere ? "" : " zero"}">${hasHere ? fmtInt(here) : "–"}<small>${all && all !== here ? "전체 " + fmtInt(all) : locName(S.loc)}</small></span>
-      <span class="meta">${pvTag}${dupTag(it)}${S.admin ? itemMeta(it) : ""}</span>
+      <span class="meta">${pvTag}${S.admin ? itemMeta(it) : ""}</span>
     </button>`;
   }
   $("itemList").innerHTML = html + `</div></section>`;
@@ -971,7 +986,7 @@ function drawSheet() {
   const anim = sheet.fresh ? " anim" : "";
   sheet.fresh = false;
   const head = it
-    ? `<h2>${esc(grpLabel(it.grp))} · ${esc(it.spec)}<span class="num">${it.len ?? ""}</span></h2>${S.admin || dupTag(it) ? `<div class="meta">${dupTag(it)}${S.admin ? itemMeta(it) : ""}</div>` : ""}`
+    ? `<h2>${esc(grpLabel(it.grp))} · ${esc(it.spec)}<span class="num">${it.len ?? ""}</span></h2>${S.admin ? `<div class="meta">${itemMeta(it)}${S.alias && [...S.alias].some(([, f]) => f === it.r) ? ` · 같은 규격 ${[...S.alias].filter(([, f]) => f === it.r).map(([d]) => d + "행").join(", ")} 합침` : ""}</div>` : ""}`
     : `<h2>목록에 없는 품목</h2><div class="meta">집계표 '당월 추가품목'으로 따로 정리됩니다</div>`;
   $("sheetRoot").innerHTML = `
     <div class="scrim" data-act="close"></div>
@@ -1059,6 +1074,9 @@ document.addEventListener("click", ev => {
   if (t.id === "adminOffBtn") { adminOff("관리자 모드를 껐습니다"); return }
   if (t.id === "mgrBtn") { openDlg("mgrs"); return }
   if (t.id === "pinBtn") { openDlg("pins"); return }
+  if (t.id === "grpBtn") { openGrp(); return }
+  if (t.dataset.act === "grpclose") { closeGrp(); return }
+  if (t.dataset.gopt !== undefined) { S.grp = t.dataset.gopt; closeGrp(); setGrpBtn(); renderItems(); window.scrollTo({ top: 0 }); return }
   if (t.id === "bigBtn" || t.id === "bigBtn2") { S.big = !S.big; store.set("rm-big", S.big); applyBig(); if (S.tab === "all") renderTab(); toast(S.big ? "글자를 크게 했습니다" : "글자를 보통으로 했습니다"); return }
   if (t.dataset.loc) { S.loc = t.dataset.loc; store.set("rm-loc", S.loc); renderLocBar(); renderTab(); return }
   if (t.classList.contains("tab")) { S.tab = t.id.slice(4); renderLocBar(); renderTab(); return }
@@ -1116,13 +1134,13 @@ document.addEventListener("input", ev => {
   if (ev.target.id === "cname" && sheet) { sheet.cname = ev.target.value; sheet.dup = null; updateDisplay() }
 });
 document.addEventListener("change", ev => {
-  if (ev.target.id === "grpSel") { S.grp = ev.target.value; renderItems() }
   if (ev.target.id === "monthSel") setMonth(ev.target.value).catch(() => toast("품목 목록을 불러오지 못했습니다. 새로고침해 주세요."));
   if (ev.target.id === "lloc") { S.lloc = ev.target.value; renderAllLog() }
   if (ev.target.id === "cloc") { S.cloc = ev.target.value; renderCmp() }
 });
 document.addEventListener("keydown", ev => {
   if (dlg) { if (ev.key === "Enter") { ev.preventDefault(); submitDlg() } else if (ev.key === "Escape") closeDlg(); return }
+  if ($("grpRoot").innerHTML && ev.key === "Escape") { closeGrp(); return }
   if (!sheet || ev.target.tagName === "INPUT") return;
   if (/^[0-9]$/.test(ev.key)) press(ev.key);
   else if (ev.key === "*" || ev.key === "x") press("×");
