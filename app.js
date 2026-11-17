@@ -174,7 +174,10 @@ let vis = null;  // 관리자 설정 화면 상태 {loc, hidden:Set, dirty, q, c
 function openVis(loc) {
   vis = { loc: loc || S.loc, hidden: new Set(S.hide[loc || S.loc] || []), dirty: false, q: "", closeArm: false };
   drawVis();
+  if (S.prev == null) loadPrev().then(() => { if (vis) drawVisList() });  // 지난달 재고 표시용
 }
+/* 지난달 그 구역 수량 (없으면 0) */
+const visPrev = it => S.prev && S.prev.length ? (prevIdx.get(itemKey(it) + "|" + vis.loc) || 0) : 0;
 function drawVis() {
   if (!vis) { $("visRoot").innerHTML = ""; return }
   const shown = S.items.filter(it => !vis.hidden.has(itemKey(it))).length;
@@ -182,7 +185,8 @@ function drawVis() {
     <div class="vispanel" role="dialog" aria-modal="true" aria-label="구역별 품목·길이">
       <div class="vis-h"><b>구역별 품목·길이</b><button class="x" data-act="visclose" aria-label="닫기">✕</button></div>
       <div class="vis-locs">${LOCS.map(l => `<button class="loc" data-visloc="${l.key}" aria-pressed="${vis.loc === l.key}">${l.name}<small>${(S.hide[l.key] || []).length ? "숨김 " + S.hide[l.key].length : ""}</small></button>`).join("")}</div>
-      <p class="vis-note">끈 품목은 <b>${esc(locName(vis.loc))}</b> 입력 목록에서 숨깁니다. 검색하면 나오고, 집계 엑셀에는 영향이 없습니다. 길이 버튼을 누르면 그 품목군의 그 길이를 한 번에 켜고 끕니다.</p>
+      <p class="vis-note">끈 품목은 <b>${esc(locName(vis.loc))}</b> 입력 목록에서 숨깁니다. 검색하면 나오고, 집계 엑셀에는 영향이 없습니다. 길이 버튼을 누르면 그 품목군의 그 길이를 한 번에 켜고 끕니다. 점(•)은 지난달 이 구역에 재고가 있던 길이입니다.</p>
+      <p class="vis-warn" id="visWarn"></p>
       <div class="vis-bar"><input id="visq" type="search" placeholder="품목군·규격·길이 검색" value="${esc(vis.q)}" autocomplete="off"><span id="visCnt">보임 ${shown} / ${S.items.length}</span></div>
       <div class="vis-list" id="visList"></div>
       <div class="vis-btns"><button class="btn ghost" data-act="visclose">닫기</button><button class="btn" data-act="vissave" ${vis.dirty ? "" : "disabled"}>${vis.dirty ? "저장" : "저장됨"}</button></div>
@@ -200,14 +204,27 @@ function drawVisList() {
     const lens = [...new Set(its.map(i => i.len))].sort((a, b) => (a ?? 0) - (b ?? 0));
     const st = list => { const on = list.filter(i => !vis.hidden.has(itemKey(i))).length; return on === list.length ? "on" : on ? "part" : "off" };
     return `<section><div class="vis-g"><b>${esc(grpLabel(g))}</b><button class="linkbtn" data-visgrp="${esc(g)}">${st(its) === "on" ? "모두 끄기" : "모두 켜기"}</button></div>
-      <div class="vis-lens">${lens.map(l => `<button class="vlen ${st(its.filter(i => i.len === l))}" data-vislen="${esc(g)}" data-len="${l ?? ""}">${l ?? "길이 없음"}</button>`).join("")}</div>
-      ${its.map(it => `<label class="vis-it${vis.hidden.has(itemKey(it)) ? " off" : ""}"><input type="checkbox" data-viskey="${esc(itemKey(it))}" ${vis.hidden.has(itemKey(it)) ? "" : "checked"}><span>${esc(it.spec)}<b>${it.len ?? ""}</b></span></label>`).join("")}</section>`;
+      <div class="vis-lens">${lens.map(l => { const li = its.filter(i => i.len === l); return `<button class="vlen ${st(li)}" data-vislen="${esc(g)}" data-len="${l ?? ""}">${l ?? "길이 없음"}${li.some(i => visPrev(i)) ? `<i class="vdot" title="지난달 재고 있음"></i>` : ""}</button>` }).join("")}</div>
+      ${its.map(it => { const off = vis.hidden.has(itemKey(it)), pv = visPrev(it);
+        return `<label class="vis-it${off ? " off" : ""}"><input type="checkbox" data-viskey="${esc(itemKey(it))}" ${off ? "" : "checked"}><span>${esc(it.spec)}<b>${it.len ?? ""}</b></span>${pv ? `<em class="vprev${off ? " warn" : ""}">지난달 ${fmtInt(pv)}本</em>` : ""}</label>` }).join("")}</section>`;
   }).join("") || `<div class="empty">검색에 맞는 품목이 없습니다.</div>`;
+  // 꺼둔 품목 중 지난달 재고가 있던 것
+  const warn = S.items.filter(it => vis.hidden.has(itemKey(it)) && visPrev(it));
+  const wn = $("visWarn");
+  if (wn) wn.innerHTML = S.prev == null ? "" : !S.prev.length ? `${esc(monthLabel(addMonth(S.month, -1)))} 실사 자료가 없어 지난달 재고는 표시하지 않습니다.`
+    : warn.length ? `<b>꺼둔 품목 중 ${esc(monthLabel(addMonth(S.month, -1)))} ${esc(locName(vis.loc))}에 재고가 있던 것 ${warn.length}개:</b> ${warn.map(it => `${esc(grpLabel(it.grp))} ${esc(it.spec)}${it.len ?? ""} (${fmtInt(visPrev(it))}本)`).join(", ")}`
+    : `꺼둔 품목 중 ${esc(monthLabel(addMonth(S.month, -1)))}에 재고가 있던 것은 없습니다.`;
+  if (wn) wn.className = "vis-warn" + (warn.length ? " on" : "");
   el.scrollTop = top;
   const c = $("visCnt"); if (c) c.textContent = `보임 ${S.items.filter(it => !vis.hidden.has(itemKey(it))).length} / ${S.items.length}`;
   const sv = document.querySelector('[data-act="vissave"]'); if (sv) { sv.disabled = !vis.dirty; sv.textContent = vis.dirty ? "저장" : "저장됨" }
 }
-function visSet(list, on) { list.forEach(it => on ? vis.hidden.delete(itemKey(it)) : vis.hidden.add(itemKey(it))); vis.dirty = true; vis.closeArm = false; drawVisList() }
+function visSet(list, on) {
+  list.forEach(it => on ? vis.hidden.delete(itemKey(it)) : vis.hidden.add(itemKey(it)));
+  vis.dirty = true; vis.closeArm = false; drawVisList();
+  const had = on ? 0 : list.filter(it => visPrev(it)).length;
+  if (had) toast(`지난달 재고가 있던 품목 ${had}개도 꺼졌습니다. 맞는지 확인해 주세요.`);
+}
 async function saveVis(btn) {
   if (!vis || !vis.dirty) return;
   btn.disabled = true; btn.textContent = "저장 중…";
