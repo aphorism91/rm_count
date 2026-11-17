@@ -210,6 +210,10 @@ td.itm small { display: block; color: var(--muted); font-size: 11.5px }
 .dlg .mgr-row { display: grid; grid-template-columns: 64px 1fr; align-items: center; gap: 8px }
 .dlg .mgr-row label { font-size: 14px; font-weight: 700 }
 .dlg .mgr-row input { margin-top: 0; padding: 9px 10px; font-size: 15px }
+#setPinWrap { margin-top: 12px }
+.dlg .mgr-row label small { display: block; font-size: 11px; font-weight: 400; color: var(--muted) }
+.dlg .mgr-row label small.nopin { color: var(--warn, #c2410c) }
+.dlg .mgr-row .pinv { font-size: 22px; letter-spacing: 3px; font-variant-numeric: tabular-nums }
 .dlg .linkbtn { align-self: flex-start; border: none; background: none; color: var(--accent); font-size: 13px; padding: 2px 0; text-decoration: underline }
 .dlg .dlg-body { display: flex; flex-direction: column; gap: 8px; max-height: 60vh; overflow: auto }
 .top .right { display: flex; flex-direction: column; align-items: flex-end; gap: 2px }
@@ -347,6 +351,7 @@ td.itm small { display: block; color: var(--muted); font-size: 11.5px }
       <div class="set-title">내 이름을 고르세요 <small id="setMon"></small></div>
       <div class="names" id="setNames"></div>
       <label id="setNameWrap" hidden>이름 직접 입력<input id="setName" maxlength="20" placeholder="예: 김민수"></label>
+      <label id="setPinWrap" hidden>PIN<input id="setPin" type="password" inputmode="numeric" maxlength="8" placeholder="관리자에게 받은 숫자 4자리" autocomplete="off"></label>
     </div>
     <div class="err" id="setErr"></div>
     <button class="btn" type="submit" id="setBtn">다음</button>

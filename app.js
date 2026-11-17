@@ -24,7 +24,7 @@ const S = {
   server: [], entries: [], loaded: false, online: null, syncedAt: null, sig: "",
   loc: "I", tab: "input", q: "", grp: "", filt: "all", lq: "", showDel: false,
   allView: "items", iq: "", allFilt: "done", aq: "", lloc: "", showDelA: false,
-  locks: {}, mgrs: {}, admin: "", me: "", code: "", outbox: [], rejected: [], sending: false,
+  locks: {}, mgrs: {}, admin: "", me: "", pin: "", code: "", outbox: [], rejected: [], sending: false,
   prev: null, prevM: "", cq: "", cloc: "", cfilt: "big", csign: "all", corder: "diff",
   inb: null,
 };
@@ -171,8 +171,11 @@ async function apiGet(params) {
 }
 async function apiPost(body) {
   // text/plain 으로 보내야 브라우저가 사전 확인 요청 없이 Apps Script에 바로 보낸다
-  // 관리자 모드면 관리자 코드를 같이 보낸다 (body 에 admin 이 있으면 그것을 쓴다)
-  const r = await fetch(API, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ admin: S.admin || undefined, ...body, code: S.code }) });
+  // 관리자 모드면 관리자 코드를, 담당자는 PIN을 같이 보낸다 (body 에 admin 이 있으면 그것을 쓴다)
+  return postWith(S.code, { admin: S.admin || undefined, pin: S.pin || undefined, ...body });
+}
+async function postWith(code, body) {
+  const r = await fetch(API, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ ...body, code }) });
   return r.json();
 }
 
@@ -200,6 +203,7 @@ async function refresh() {
   try {
     const j = await apiGet({ action: "list", month });
     if (j.ok === false && j.error === "code") { openSetup("현장 코드가 맞지 않습니다. 다시 입력해 주세요."); return }
+    if (j.ok === false && j.error === "wait") { toast(DLG_ERR.wait); S.loaded = true; mergeAndRender(); return }
     if (month !== S.month) return;
     S.server = j.entries || [];
     S.locks = j.locks || {};
@@ -259,7 +263,8 @@ async function loadInb() {
     if (S.month !== month) return;
     if (j.ok === false && (j.error === "admin" || j.error === "noadmin")) { S.inb = null; adminOff("관리자 코드가 맞지 않아 관리자 모드를 껐습니다"); return }
     S.inb = j.ok === false
-      ? { month, err: j.error === "action" ? "저장소가 아직 새 버전이 아닙니다 (Code.gs 새 버전 배포 필요)." : `입고 자료를 받지 못했습니다 (${j.error}).` }
+      ? { month, err: j.error === "action" ? "저장소가 아직 새 버전이 아닙니다 (Code.gs 새 버전 배포 필요)."
+        : j.error === "wait" ? DLG_ERR.wait : `입고 자료를 받지 못했습니다 (${j.error}).` }
       : { month, rows: j.rows || [], at: j.at || "" };
   } catch { if (S.month === month && !S.inb) S.inb = { month, err: "통신이 안 되어 입고 자료를 받지 못했습니다." } }
   if (S.tab === "all" && S.allView === "cmp") renderCmp();
@@ -288,6 +293,9 @@ async function flush() {
           : await apiPost({ action: "del", id: op.id, by: op.by });
       } catch { failed = true; break }  // 통신 실패: 대기열에 그대로 두고 다음에 다시 보낸다
       if (j.ok === false && j.error === "code") { failed = true; openSetup("현장 코드가 바뀌었습니다. 새 코드를 입력해 주세요."); break }
+      // 여러 번 틀려 막혔거나 PIN이 틀리면 버리지 않고 대기열에 둔다 (PIN을 다시 넣으면 이어서 보낸다)
+      if (j.ok === false && j.error === "wait") { toast(DLG_ERR.wait); break }
+      if (j.ok === false && (j.error === "pin" || j.error === "nopin")) { openSetup((S.pin || j.error === "nopin" ? DLG_ERR[j.error] : "이제 담당자는 PIN을 넣어야 저장됩니다.") + " 이름을 고르고 PIN을 넣어 주세요. (보내지 못한 입력은 이 폰에 남아 있습니다)", true); break }
       // 관리자 코드가 바뀌었으면 관리자 모드를 끄고 같은 건을 일반 권한으로 다시 보낸다
       if (j.ok === false && (j.error === "admin" || j.error === "noadmin") && S.admin) { adminOff("관리자 코드가 맞지 않아 관리자 모드를 껐습니다"); continue }
       // 보내는 사이 구역이 잠겼거나 담당자가 바뀌었으면 버리지 않고 따로 보관한다 (해결 후 다시 보내기)
@@ -319,7 +327,7 @@ function deleteEntry(e) {
 /* ---------- 구역 잠금·관리자 모드·담당자 지정 (대화창) ---------- */
 /* 대기열에 두지 않고 바로 보낸다 (통신이 될 때만) */
 let dlg = null;
-function openDlg(kind, loc) { dlg = { kind, loc, err: "", busy: false }; drawDlg(); if (kind === "lock") loadMiss(loc) }
+function openDlg(kind, loc) { dlg = { kind, loc, err: "", busy: false }; drawDlg(); if (kind === "lock") loadMiss(loc); if (kind === "pins") loadPins() }
 /* 잠그기 전 확인: 지난달 이 구역에 있었는데 이번 달에 아직 안 넣은 품목 */
 async function loadMiss(loc) {
   await loadPrev();
@@ -379,6 +387,22 @@ function drawDlg() {
     body = `<h2>관리자 모드</h2><p>관리자 코드를 넣으면 모든 구역에 입력·수정·삭제하고, 잠금·해제와 구역 담당자 지정을 할 수 있습니다.</p>
        <input id="adminCode" type="password" inputmode="numeric" maxlength="12" placeholder="관리자 코드" autocomplete="off">`;
     okLabel = "켜기";
+  } else if (dlg.kind === "pins") {
+    if (dlg.saved) {
+      body = `<h2>담당자 PIN을 저장했습니다</h2>
+         <p>아래 PIN을 각자에게 따로 알려 주세요. 이 창을 닫으면 다시 볼 수 없습니다 (잊으면 새로 정하면 됩니다).</p>
+         <div class="dlg-body">${Object.entries(dlg.saved).map(([n, p]) => `<div class="mgr-row"><label>${esc(n)}</label><b class="pinv">${esc(p)}</b></div>`).join("")}</div>`;
+      okLabel = "닫기";
+    } else {
+      const names = dlg.has ? pinDlgNames() : [];
+      const v = dlg.vals || {};
+      body = `<h2>담당자 PIN</h2>
+         <p>담당자는 로그인할 때 이름과 PIN을 넣어야 입력·수정·삭제·잠금을 할 수 있습니다. PIN은 숫자 4자리로 정해 각자에게 따로 알려 주세요. 한 번 정하면 다음 달에도 그대로 씁니다.</p>
+         ${!dlg.has ? `<p>불러오는 중…</p>` : !names.length ? `<p>${esc(mon)} 구역 담당자를 먼저 지정해 주세요.</p>`
+           : `<div class="dlg-body">${names.map((n, i) => { const has = dlg.has.includes(n); return `<div class="mgr-row"><label for="pin-${i}">${esc(n)}<small class="${has ? "" : "nopin"}">${has ? "PIN 있음" : "PIN 없음"}</small></label><input id="pin-${i}" data-pinname="${esc(n)}" value="${esc(v[n] || "")}" inputmode="numeric" maxlength="8" placeholder="${has ? "바꿀 때만" : "새 PIN"}" autocomplete="off"></div>` }).join("")}</div>
+           <button class="linkbtn" data-dlg="autopin">PIN 없는 사람 자동으로 정하기</button>`}`;
+      okLabel = "저장";
+    }
   } else {
     const v = dlg.vals || Object.fromEntries(LOCS.map(l => [l.key, mgrsOf(l.key).join(", ")]));
     body = `<h2>${esc(mon)} 구역 담당자</h2>
@@ -393,7 +417,7 @@ function drawDlg() {
     <div class="dlg" role="dialog" aria-modal="true">
       ${body}
       <div class="err">${esc(dlg.err)}</div>
-      <div class="dlg-btns"><button class="btn ghost" data-dlg="close">취소</button>
+      <div class="dlg-btns">${dlg.saved ? "" : `<button class="btn ghost" data-dlg="close">취소</button>`}
         <button class="btn" data-dlg="ok" ${dlg.busy ? "disabled" : ""}>${dlg.busy ? "처리 중…" : okLabel}</button></div>
     </div>`;
   $("adminCode")?.focus();
@@ -401,7 +425,26 @@ function drawDlg() {
 const DLG_ERR = {
   admin: "관리자 코드가 맞지 않습니다.", noadmin: "관리자 코드가 아직 설정되지 않았습니다. 구글 시트 스크립트 속성에 ADMIN_CODE를 넣어 주세요.",
   notmgr: "이 구역 담당자만 할 수 있습니다.", action: "저장소가 아직 새 버전이 아닙니다. 관리자에게 문의해 주세요.",
+  pin: "PIN이 맞지 않습니다.", nopin: "아직 내 PIN이 정해지지 않았습니다. 관리자에게 PIN을 받아 주세요.",
+  wait: "여러 번 틀려서 잠시 막혔습니다. 15~30분 뒤 다시 해 주세요.", expr: "입력식이 올바르지 않습니다.",
 };
+/* 담당자 PIN 창: 그달 담당자 + 이미 PIN을 정한 사람 */
+const pinDlgNames = () => [...new Set([...nameList(S.mgrs).map(n => n.name), ...(dlg.has || [])])].sort((a, b) => a.localeCompare(b, "ko"));
+function pinInputs() {
+  const v = {};
+  document.querySelectorAll("[data-pinname]").forEach(el => { v[el.dataset.pinname] = el.value.trim() });
+  return v;
+}
+const randPin = () => String(crypto.getRandomValues(new Uint32Array(1))[0] % 10000).padStart(4, "0");
+async function loadPins() {
+  try {
+    const j = await apiPost({ action: "pins" });
+    if (!dlg || dlg.kind !== "pins") return;
+    if (j.ok === false) dlg.err = DLG_ERR[j.error] || `PIN 목록을 받지 못했습니다 (${j.error}).`;
+    dlg.has = j.names || [];
+  } catch { if (dlg) { dlg.err = "통신이 안 됩니다."; dlg.has = [] } }
+  drawDlg();
+}
 async function loadPrevMgrs() {
   if (!dlg || dlg.busy) return;
   const prev = addMonth(S.month, -1);
@@ -427,6 +470,14 @@ async function submitDlg() {
     dlg.vals = mgrInputs();
     const mgrs = Object.fromEntries(LOCS.map(l => [l.key, [...new Set(String(dlg.vals[l.key] || "").split(/[,，]/).map(s => s.trim()).filter(Boolean))]]));
     body = { action: "setmgrs", month: S.month, mgrs, by: S.me };
+  } else if (kind === "pins") {
+    if (dlg.saved) { closeDlg(); return }
+    dlg.vals = pinInputs();
+    const pins = Object.fromEntries(Object.entries(dlg.vals).filter(([, p]) => p));
+    const bad = Object.keys(pins).filter(n => !/^\d{4,8}$/.test(pins[n]));
+    if (bad.length) { dlg.err = `PIN은 숫자 4~8자리로 넣어 주세요: ${bad.join(", ")}`; drawDlg(); return }
+    if (!Object.keys(pins).length) { dlg.err = "정하거나 바꿀 PIN을 넣어 주세요."; drawDlg(); return }
+    body = { action: "pins", pins, by: S.me };
   } else {
     if (S.outbox.length) { dlg.err = "아직 보내지 못한 입력이 있습니다. 먼저 보낸 뒤 다시 해 주세요."; drawDlg(); flush(); return }
     body = { action: kind, month: S.month, loc, by: S.me };
@@ -442,6 +493,7 @@ async function submitDlg() {
     if (kind !== "admin" && (j.error === "admin" || j.error === "noadmin") && S.admin) adminOff();
     drawDlg(); return
   }
+  if (kind === "pins") { dlg.saved = body.pins; dlg.has = j.names || dlg.has; toast("PIN을 저장했습니다"); drawDlg(); return }
   closeDlg();
   if (kind === "admin") { S.admin = body.admin; store.set("rm-admin", S.admin); toast("관리자 모드를 켰습니다"); mergeAndRender(true); return }
   if (kind === "mgrs") {
@@ -460,10 +512,11 @@ const opLoc = op => op.op === "add" ? op.entry.loc : (S.entries.find(e => e.id =
 /* ---------- 처음 설정: 현장 코드 → 그달 담당자 명단에서 이름 고르기 ---------- */
 /* 이름을 손으로 치면 담당자 명단과 한 글자만 달라도 입력이 막히므로, 명단에서 고르게 한다 */
 let setup = null;
-function openSetup(msg) {
+function openSetup(msg, keepCode) {
   setup = { step: 1, names: [], pick: "", manual: false, mon: "" };
   $("setup").hidden = false;
-  $("setCode").value = msg ? "" : S.code;
+  $("setCode").value = msg && !keepCode ? "" : S.code;
+  $("setPin").value = "";
   $("setErr").textContent = msg || "";
   drawSetup();
 }
@@ -476,6 +529,7 @@ function drawSetup() {
   $("setNames").innerHTML = setup.names.map(n => `<button type="button" class="nm" data-nm="${esc(n.name)}" aria-pressed="${!setup.manual && setup.pick === n.name}">${esc(n.name)}<small>${esc(n.locs.join(", "))}</small></button>`).join("")
     + `<button type="button" class="nm other" data-nm="" aria-pressed="${setup.manual}">${setup.names.length ? "명단에 없어요 (관리자 등) · 직접 입력" : "이름 직접 입력"}</button>`;
   $("setNameWrap").hidden = !setup.manual;
+  $("setPinWrap").hidden = setup.manual || !setup.pick;  // 명단에서 고른 담당자는 PIN을 넣는다
 }
 /* 담당자 명단 → [{name, locs:[구역명]}] */
 function nameList(mgrs) {
@@ -498,7 +552,9 @@ $("setupForm").addEventListener("submit", async ev => {
     if (API) {
       try {
         const j = await getWith(code, { action: "list", month: S.month || "0000-00" });
-        if (j.ok === false && j.error === "code") { $("setBtn").disabled = false; $("setErr").textContent = "현장 코드가 맞지 않습니다."; return }
+        if (j.ok === false && (j.error === "code" || j.error === "wait")) {
+          $("setBtn").disabled = false; $("setErr").textContent = j.error === "wait" ? DLG_ERR.wait : "현장 코드가 맞지 않습니다."; return
+        }
         mgrs = j.mgrs || {};
         // 이번 달 담당자가 아직 없으면 지난달 명단을 보여준다
         if (!Object.keys(mgrs).length && S.month) {
@@ -520,7 +576,22 @@ $("setupForm").addEventListener("submit", async ev => {
   }
   const name = setup.manual ? $("setName").value.trim() : setup.pick;
   if (!name) { $("setErr").textContent = setup.manual ? "이름을 넣어 주세요." : "이름을 골라 주세요."; return }
-  S.me = name; S.code = setup.code; store.set("rm-name", name); store.set("rm-code", setup.code);
+  // 담당자는 PIN 확인 (통신이 안 되면 일단 받아 두고, 보낼 때 저장소가 다시 확인한다)
+  const pin = setup.manual ? "" : $("setPin").value.trim();
+  if (!setup.manual) {
+    if (!/^\d{4,8}$/.test(pin)) { $("setErr").textContent = "관리자에게 받은 PIN(숫자 4자리)을 넣어 주세요."; $("setPin").focus(); return }
+    if (API) {
+      $("setBtn").disabled = true; $("setErr").textContent = "확인 중…";
+      let j = null;
+      try { j = await postWith(setup.code, { action: "whoami", by: name, pin }) } catch {}
+      $("setBtn").disabled = false;
+      if (!setup) return;
+      // "action": 저장소가 아직 예전 버전 (PIN 확인 없음)
+      if (j && j.ok === false && j.error !== "action") { $("setErr").textContent = DLG_ERR[j.error] || `확인하지 못했습니다 (${j.error}).`; return }
+    }
+  }
+  S.me = name; S.code = setup.code; S.pin = pin;
+  store.set("rm-name", name); store.set("rm-code", setup.code); store.set("rm-pin", pin);
   $("setup").hidden = true; setup = null;
   S.sig = ""; flush(); refresh(); loadPrev(); renderAll();
 });
@@ -781,13 +852,14 @@ function renderSum() {
       <h2>관리자</h2>
       <p>${esc(monthLabel(S.month))} 구역 담당자를 정합니다. 담당자는 달마다 따로 정하고, 정하지 않은 구역은 관리자만 입력합니다.</p>
       <button class="btn" id="mgrBtn">구역 담당자 지정</button>
+      <button class="btn" id="pinBtn">담당자 PIN 정하기</button>
       <button class="btn ghost" id="adminOffBtn">관리자 모드 끄기</button>
     </div>` : ""}
     <div class="card">
       <h2>이 폰 설정</h2>
       <p>입력자: <b>${esc(S.me || "-")}</b>${S.admin ? " · <b>관리자 모드</b>" : ""}</p>
       <p>${S.admin ? "모든 구역에 입력·수정·삭제하고 잠금·해제할 수 있습니다."
-        : (() => { const mine = LOCS.filter(l => isMgr(l.key)).map(l => l.name); return mine.length ? `담당 구역: <b>${esc(mine.join(", "))}</b> · 담당 구역에 입력하고, 내가 넣은 기록만 수정·삭제할 수 있습니다.` : "이번 달 담당 구역이 없습니다. 담당자 목록의 이름과 위 입력자 이름이 똑같아야 합니다." })()}</p>
+        : (() => { const mine = LOCS.filter(l => isMgr(l.key)).map(l => l.name); return mine.length ? `담당 구역: <b>${esc(mine.join(", "))}</b> · 담당 구역에 입력하고, 내가 넣은 기록만 수정·삭제할 수 있습니다.${S.pin ? "" : " <b>PIN이 없습니다.</b> 아래 [이름·현장 코드 바꾸기]에서 관리자에게 받은 PIN을 넣어 주세요."}` : "이번 달 담당 구역이 없습니다. 담당자 목록의 이름과 위 입력자 이름이 똑같아야 합니다." })()}</p>
       <button class="btn ghost" id="openSetup">이름·현장 코드 바꾸기</button>
       ${S.admin ? "" : `<button class="btn ghost" id="adminBtn">관리자 모드</button>`}
     </div>`;
@@ -956,15 +1028,21 @@ document.addEventListener("click", ev => {
   if (!t) return;
   if (setup && t.dataset.nm !== undefined) {
     setup.manual = t.dataset.nm === ""; setup.pick = t.dataset.nm; $("setErr").textContent = ""; drawSetup();
-    if (setup.manual) $("setName").focus();
+    $(setup.manual ? "setName" : "setPin").focus();
     return
   }
   if (t.id === "setBack") { setup.step = 1; $("setErr").textContent = ""; drawSetup(); return }
   if (t.dataset.miss) { const r = Number(t.dataset.miss); closeDlg(); openSheet(r); return }
+  if (t.dataset.dlg === "autopin") {
+    dlg.vals = pinInputs();
+    pinDlgNames().forEach(n => { if (!dlg.has.includes(n) && !dlg.vals[n]) dlg.vals[n] = randPin() });
+    dlg.err = ""; drawDlg(); return
+  }
   if (t.dataset.dlg) { t.dataset.dlg === "ok" ? submitDlg() : t.dataset.dlg === "prev" ? loadPrevMgrs() : closeDlg(); return }
   if (t.id === "adminBtn") { openDlg("admin"); return }
   if (t.id === "adminOffBtn") { adminOff("관리자 모드를 껐습니다"); return }
   if (t.id === "mgrBtn") { openDlg("mgrs"); return }
+  if (t.id === "pinBtn") { openDlg("pins"); return }
   if (t.dataset.loc) { S.loc = t.dataset.loc; store.set("rm-loc", S.loc); renderLocBar(); renderTab(); return }
   if (t.classList.contains("tab")) { S.tab = t.id.slice(4); renderLocBar(); renderTab(); return }
   if (t.id.startsWith("seg-")) { S.allView = t.id.slice(4); renderTab(); if (S.allView === "cmp") loadInb(); return }
@@ -1062,7 +1140,7 @@ if ("serviceWorker" in navigator && location.protocol === "https:") {
 (async function start() {
   S.loc = store.get("rm-loc", "I");
   if (!LOCS.some(l => l.key === S.loc)) S.loc = "I";
-  S.me = store.get("rm-name", ""); S.code = store.get("rm-code", ""); S.admin = store.get("rm-admin", "");
+  S.me = store.get("rm-name", ""); S.code = store.get("rm-code", ""); S.admin = store.get("rm-admin", ""); S.pin = store.get("rm-pin", "");
   $("lloc").insertAdjacentHTML("beforeend", LOCS.map(l => `<option value="${l.key}">${l.name}</option>`).join(""));
   $("cloc").insertAdjacentHTML("beforeend", LOCS.map(l => `<option value="${l.key}">${l.name}</option>`).join(""));
   try { await loadCatalogs() } catch { $("itemList").innerHTML = `<div class="empty">품목 목록을 불러오지 못했습니다. 통신을 확인하고 새로고침해 주세요.</div>`; return }
