@@ -5,10 +5,10 @@
  */
 const API = (window.APP_CONFIG || {}).apiUrl || "";
 const FIRST_MONTH = "2026-11";
-const LOC = { WK: "에스제이", WO: "동일", WS: "스카이", WT: "태흥", WX: "공장 밖" };
+const LOC = { WK: "에스제이", WO: "동일", WS: "스카이", WX: "공장 밖" };  // 태흥은 뺐다 (2026-11-18 사용자 요청)
 const SHEETS = [
   { key: "wip", name: "재공품", locs: ["WK", "WO", "WS"] },
-  { key: "ns", name: "비규격", locs: ["WT", "WK", "WO", "WS"] },
+  { key: "ns", name: "비규격", locs: ["WK", "WO", "WS"] },
   { key: "scrap", name: "공장 밖 스크랩", locs: ["WX"] },
 ];
 const NS_EXPORT = "WS";  // 비규격 스카이 = 수출 탭 (현장명·유형·중량)
@@ -97,6 +97,8 @@ function merge() {
   let list = S.server.map(e => ({ ...e }));
   for (const op of S.outbox) {
     if (op.op === "add" && op.entry.m === S.month && !list.some(e => e.id === op.entry.id)) list.push({ ...op.entry, pending: true });
+    if (op.op === "edit") list = list.map(e => e.id === op.id ? { ...e, expr: op.expr, qty: op.qty, memo: op.memo, pending: true,
+      edits: [...(e.edits || []), { expr: e.expr, qty: e.qty, memo: e.memo, at: op.at, by: op.by }] } : e);
     if (op.op === "del") list = list.map(e => e.id === op.id ? { ...e, del: true, delBy: op.by, delAt: op.at, pending: true } : e);
   }
   S.entries = list;
@@ -132,14 +134,18 @@ async function flush() {
     while (S.outbox.length) {
       const op = S.outbox[0];
       let j;
-      try { j = op.op === "add" ? await apiPost({ action: "add", entry: op.entry }) : await apiPost({ action: "del", id: op.id, by: op.by }) }
+      try {
+        j = op.op === "add" ? await apiPost({ action: "add", entry: op.entry })
+          : op.op === "edit" ? await apiPost({ action: "edit", id: op.id, expr: op.expr, qty: op.qty, memo: op.memo, by: op.by })
+          : await apiPost({ action: "del", id: op.id, by: op.by });
+      }
       catch { failed = true; break }
       if (j.ok === false && (j.error === "code" || j.error === "wait" || j.error === "pin" || j.error === "nopin")) {
         toast((ERR[j.error] || "현장 코드가 맞지 않습니다.") + " 원자재 화면에서 다시 로그인해 주세요. (보내지 못한 입력은 이 폰에 남아 있습니다)"); failed = true; break
       }
       if (j.ok === false && (j.error === "admin" || j.error === "noadmin") && S.admin) { adminOff("관리자 코드가 맞지 않아 관리자 모드를 껐습니다"); continue }
       if (j.ok === false && (j.error === "locked" || j.error === "notmgr")) { S.rejected.push(op); toast(j.error === "locked" ? "잠긴 장소라 저장하지 못한 입력이 있습니다" : "담당 장소가 아니라 저장하지 못한 입력이 있습니다") }
-      else if (j.ok === false && j.error === "owner") toast("다른 사람이 입력한 기록은 삭제할 수 없습니다");
+      else if (j.ok === false && j.error === "owner") toast("다른 사람이 입력한 기록은 고치거나 삭제할 수 없습니다");
       else if (j.ok === false) toast(`한 건을 저장하지 못했습니다 (${j.error}).`);
       S.outbox.shift(); saveOutbox(); sent++;
     }
@@ -282,20 +288,55 @@ function dispHtml() {
       `<div class="res">${v.kgOk ? `= <b>${fmt1(v.kg)}</b> kg` : sheet.kg ? "식이 끝나지 않았습니다" : `${esc(LOC[sheet.loc])}에 저장됩니다`}</div>`;
   }
   const wt = v.ok && it.uw ? ` · ${fmt1(v.len / 1000 * it.uw * v.qty)} kg` : "";
-  return fld("len", "길이", sheet.len, "mm", "예: 3800") + fld("qty", "수량", sheet.qty, "本", "400×7+3 처럼 묶음도") +
+  return fld("len", sheet.editing ? "길이(고정)" : "길이", sheet.len, "mm", "예: 3800") + fld("qty", "수량", sheet.qty, "本", "400×7+3 처럼 묶음도") +
     `<div class="res">${v.ok ? `= ${v.len} mm × <b>${fmtInt(v.qty)}</b>本${wt}` : sheet.qty && !v.qtyOk ? "수량 식이 끝나지 않았습니다" : `${esc(LOC[sheet.loc])}에 저장됩니다`}</div>`;
 }
 function saveLabel() {
-  if (sheet.mode === "len" && sheet.fld === "len") return "다음 →";
-  return "저장";
+  if (sheet.mode === "len" && sheet.fld === "len") return sheet.lenWarn ? "맞아요, 다음 →" : "다음 →";
+  if (sheet.editing) return "수정 저장";
+  return sheet.dup ? "또 저장" : "저장";
 }
+const saveDisabled = v => sheet.mode === "len" && sheet.fld === "len" ? !v.lenOk : !v.ok;
 function updateDisp() {
   const d = $("disp"); if (!d) return;
   d.innerHTML = dispHtml();
   const v = sheetVals(), b = $("saveBtn");
   b.textContent = saveLabel();
-  b.disabled = sheet.mode === "len" && sheet.fld === "len" ? !v.lenOk : !v.ok;
+  b.disabled = saveDisabled(v);
   $("serr").textContent = sheet.err;
+}
+/* 길이 실수 경고: 그 품목 원자재 길이(rawLen, wip_catalog.py 가 원자재 목록에서 넣음)보다 길거나 30 미만이면 한 번 묻는다.
+ * 원자재 길이를 모르는 품목은 6,000 을 기준으로 한다. */
+const LEN_DEFAULT = 6000, LEN_MIN = 30;
+const lenMax = it => it.rawLen || LEN_DEFAULT;
+const oddLen = (it, len) => len > lenMax(it) || len < LEN_MIN;
+const oddMsg = (it, len) => `${len.toLocaleString("ko-KR")} mm 가 맞나요? ${len < LEN_MIN ? "아주 짧습니다"
+  : it.rawLen ? `원자재 길이(${it.rawLen.toLocaleString("ko-KR")} mm)보다 깁니다` : "6,000 mm 보다 깁니다"}. 맞으면 한 번 더 누르세요.`;
+/* 두 번 저장 경고: 10분 안에 내가 같은 장소·품목·길이·수량(또는 kg)을 저장한 기록 */
+const DUP_MS = 10 * 60 * 1000;
+function findDup(it, v) {
+  const now = Date.now();
+  return active().filter(e => e.loc === sheet.loc && itemKey(e) === it.key && e.by === S.me && now - new Date(e.ts).getTime() < DUP_MS
+      && (sheet.mode === "kg" ? isKg(e) && e.qty === v.kg : !isKg(e) && e.len === v.len && e.qty === v.qty))
+    .sort((a, b) => String(b.ts).localeCompare(String(a.ts)))[0] || null;
+}
+const minsAgo = ts => { const m = Math.floor((Date.now() - new Date(ts).getTime()) / 60000); return m < 1 ? "방금" : `${m}분 전에` };
+/* 기록 고치기: 수량(또는 kg)·특이사항만. 길이를 틀렸으면 지우고 다시 넣는다. 이전 값은 시트 '수정이력'에 남는다 */
+function startEdit(e) {
+  sheet.editing = e; sheet.mode = isKg(e) ? "kg" : "len"; sheet.fld = "qty";
+  sheet.len = isKg(e) ? "" : String(e.len); sheet.qty = isKg(e) ? "" : e.expr; sheet.kg = isKg(e) ? e.expr : "";
+  sheet.note = e.memo || ""; sheet.err = ""; sheet.dup = null; sheet.lenWarn = null;
+  drawSheet();
+  document.querySelector(".sheet")?.scrollTo({ top: 0, behavior: "smooth" });
+}
+function cancelEdit() {
+  const it = itemByKey(sheet.key);
+  Object.assign(sheet, { editing: null, mode: it.kgOnly ? "kg" : "len", fld: it.fixLen ? "qty" : "len", len: it.fixLen ? String(it.fixLen) : "", qty: "", kg: "", err: "" });
+  drawSheet();
+}
+function editEntry(e, expr, qty, memo) {
+  enqueue({ op: "edit", id: e.id, expr, qty, memo, by: S.me, at: new Date().toISOString() });
+  toast("수정했습니다 (이전 값은 기록에 남습니다)");
 }
 function entryListHtml(it) {
   const list = S.entries.filter(e => e.loc === sheet.loc && sheetOf(e) === "wip" && itemKey(e) === it.key && (S.showDel || !e.del));
@@ -310,8 +351,8 @@ function entryListHtml(it) {
   const w = sheetWritable();
   const rows = list.slice().sort((a, b) => String(b.ts).localeCompare(String(a.ts))).map(e => `
     <div class="erow${e.del ? " del" : ""}${e.pending ? " pend" : ""}"><span class="t">${isKg(e) ? "중량" : `${e.len ?? "?"} mm`}${e.memo ? ` <span class="pill">${esc(e.memo)}</span>` : ""}</span><span class="v">${isKg(e) ? fmt1(e.qty) + " kg" : fmtInt(e.qty) + "本"}</span>
-      <span class="acts">${!e.del && w && mine(e) ? `<button data-del="${esc(e.id)}">삭제</button>` : ""}</span>
-      <span class="w">${esc(e.expr)} · ${esc(e.by || "")} ${fmtTime(e.ts)}${e.del ? ` · 삭제 ${esc(e.delBy || "")}` : ""}</span></div>`).join("");
+      <span class="acts">${!e.del && w && mine(e) ? `<button class="editb" data-edit="${esc(e.id)}">수정</button><button data-del="${esc(e.id)}">삭제</button>` : ""}</span>
+      <span class="w">${esc(e.expr)} · ${esc(e.by || "")} ${fmtTime(e.ts)}${e.edits?.length ? ` · <span class="tag edit">수정 ${e.edits.length}회: ${e.edits.map(x => esc(x.expr)).join("→")}→${esc(e.expr)}</span>` : ""}${e.del ? ` · 삭제 ${esc(e.delBy || "")}` : ""}</span></div>`).join("");
   return `<div class="grpbox"><div class="grpbox-h"><span>${esc(LOC[sheet.loc])} 입력 ${live.length}건</span><small>${groups.length ? fmtInt(groups.reduce((s, g) => s + g.qty, 0)) + "本" : ""}${kgSum ? ` + ${fmt1(kgSum)}kg` : ""}${totWt ? ` ≈ ${fmt1(totWt)}kg` : ""}</small></div>
     ${groups.map(g => `<div class="lenrow"><span>${g.len} mm${g.memo ? ` · ${esc(g.memo)}` : ""}</span><b>${fmtInt(g.qty)}本</b></div>`).join("")}
     ${kgSum ? `<div class="lenrow"><span>중량</span><b>${fmt1(kgSum)} kg</b></div>` : ""}
@@ -332,7 +373,7 @@ function drawSheet() {
     <div class="sheet${anim}" role="dialog" aria-modal="true" aria-label="재공품 입력">
       <div class="sheet-head"><div><h2>${esc(grpLabel(it.grp))} · ${esc(itemLabel(it))}</h2></div><button class="x" data-act="close" aria-label="닫기">✕</button></div>
       <div class="locs">${locs}</div>
-      ${block || `${modeSeg}
+      ${block || `${sheet.editing ? `<div class="editing"><span>입력 고치는 중 (이전 ${esc(sheet.editing.expr)}${isKg(sheet.editing) ? "kg" : "本"}${isKg(sheet.editing) ? "" : `, 길이 ${sheet.editing.len}mm 그대로`})</span><button data-act="canceledit">새로 입력으로</button></div>` : modeSeg}
       <div class="display wipdisp" id="disp">${dispHtml()}</div>
       <div class="memo">${notes}<input id="note" placeholder="특이사항 (선택${it.notes && it.notes.length ? ", 위에서 고르거나 직접" : ""})" value="${esc(sheet.note)}" maxlength="40" autocomplete="off"></div>
       <div class="err" id="serr" style="color:var(--danger);font-size:13px;min-height:1em">${esc(sheet.err)}</div>
@@ -340,7 +381,7 @@ function drawSheet() {
         ${["7", "8", "9"].map(k => `<button class="k" data-k="${k}">${k}</button>`).join("")}<button class="k fn" data-k="back" aria-label="한 글자 지우기">⌫</button>
         ${["4", "5", "6"].map(k => `<button class="k" data-k="${k}">${k}</button>`).join("")}<button class="k op" data-k="×">×</button>
         ${["1", "2", "3"].map(k => `<button class="k" data-k="${k}">${k}</button>`).join("")}<button class="k op" data-k="+">+</button>
-        <button class="k fn" data-k="clear">지움</button><button class="k" data-k="0">0</button><button class="k save" id="saveBtn" data-act="ssave" style="grid-column: span 2" ${(sheet.mode === "len" && sheet.fld === "len" ? !v.lenOk : !v.ok) ? "disabled" : ""}>${saveLabel()}</button>
+        <button class="k fn" data-k="clear">지움</button><button class="k" data-k="0">0</button><button class="k save" id="saveBtn" data-act="ssave" style="grid-column: span 2" ${saveDisabled(v) ? "disabled" : ""}>${saveLabel()}</button>
       </div>`}
       <div class="prev">${entryListHtml(it)}</div>
     </div>`;
@@ -354,15 +395,39 @@ function press(k) {
   else if (k === "×" || k === "+" || k === ".") { if (f === "len" || !s || /[×+.]$/.test(s)) return; s += k }
   else s += k;
   if (s.length > (f === "len" ? 5 : 40)) return;
-  sheet[f] = s; sheet.err = ""; updateDisp();
+  if (f === "len" && sheet.editing) return;  // 고칠 때 길이는 못 바꾼다
+  sheet[f] = s; sheet.err = ""; sheet.dup = null; if (f === "len") sheet.lenWarn = null; updateDisp();
 }
 function saveWip() {
   const it = itemByKey(sheet.key), v = sheetVals();
   if (!sheetWritable()) return;
-  if (sheet.mode === "len" && sheet.fld === "len") { if (v.lenOk) { sheet.fld = "qty"; updateDisp() } return }
+  if (sheet.mode === "len" && sheet.fld === "len") {
+    if (!v.lenOk) return;
+    if (oddLen(it, v.len) && sheet.lenWarn !== v.len) {
+      sheet.lenWarn = v.len;
+      sheet.err = oddMsg(it, v.len);
+      updateDisp(); return;
+    }
+    sheet.fld = "qty"; sheet.err = ""; updateDisp(); return;
+  }
   if (!v.ok) { sheet.err = sheet.mode === "kg" ? "중량을 넣어 주세요." : !v.lenOk ? "길이를 mm 숫자로 넣어 주세요." : "수량을 넣어 주세요."; updateDisp(); return }
   const note = ($("note")?.value || "").trim().slice(0, 40);
   sheet.note = note;
+  if (sheet.editing) {
+    const e = sheet.editing;
+    if (!(S.admin || e.by === S.me)) { toast("다른 사람이 입력한 기록은 고칠 수 없습니다"); return }
+    editEntry(e, sheet.mode === "kg" ? sheet.kg : sheet.qty, sheet.mode === "kg" ? v.kg : v.qty, note);
+    cancelEdit(); return;
+  }
+  // 길이 칸을 건너뛰고 수량으로 바로 왔어도 이상한 길이는 한 번 묻는다
+  if (sheet.mode === "len" && oddLen(it, v.len) && sheet.lenWarn !== v.len) {
+    sheet.lenWarn = v.len; sheet.err = oddMsg(it, v.len); updateDisp(); return;
+  }
+  if (!sheet.dup) {
+    const d = findDup(it, v);
+    if (d) { sheet.dup = d; sheet.err = `${minsAgo(d.ts)} 같은 값을 이미 저장했습니다. 한 번 더 누르면 또 저장됩니다.`; updateDisp(); return }
+  }
+  sheet.dup = null; sheet.lenWarn = null;
   if (sheet.mode === "kg") {
     addEntry({ loc: sheet.loc, grp: it.grp, spec: it.spec, len: null, code: "kg", expr: sheet.kg, qty: v.kg, memo: note }, `저장: ${itemLabel(it)} ${fmt1(v.kg)}kg`);
     sheet.kg = "";
@@ -473,10 +538,10 @@ function renderSum() {
       const rs = [...m.values()], sum = rs.reduce((s, r) => s + r.kg, 0);
       return { sum, html: `<tr class="sub"><td class="l" colspan="3">${esc(title)}</td></tr>${rs.map((r, i) => `<tr><td class="l">${i + 1}. ${esc(r.site)}${loc === NS_EXPORT ? ` <small>${esc(r.type || "")}</small>` : ""}</td><td>${r.n}건</td><td>${fmt1(r.kg)}</td></tr>`).join("") || `<tr><td class="l" colspan="3">없음</td></tr>`}<tr><td class="l">소계</td><td></td><td><b>${fmt1(sum)}</b></td></tr>` };
     };
-    const t = sec("WT", "태흥산업"), k = sec("WK", "SJ산업"), o = sec("WO", "동일"), x = sec(NS_EXPORT, "비규격(진2 수출) · 스카이");
+    const k = sec("WK", "SJ산업"), o = sec("WO", "동일"), x = sec(NS_EXPORT, "비규격(진2 수출) · 스카이");
     html = `<p class="cmpnote">비규격 탭: 같은 현장·동은 합쳐서 한 줄로 들어갑니다.</p>
       <div class="tbl"><table class="sumtbl"><thead><tr><th class="l">현장명</th><th>입력</th><th>중량kg</th></tr></thead>
-      <tbody>${t.html}${k.html}${o.html}<tr class="tot"><td class="l" colspan="2">내수 합계</td><td>${fmt1(t.sum + k.sum + o.sum)}</td></tr>${x.html}</tbody></table></div>`;
+      <tbody>${k.html}${o.html}<tr class="tot"><td class="l" colspan="2">내수 합계</td><td>${fmt1(k.sum + o.sum)}</td></tr>${x.html}</tbody></table></div>`;
   } else {
     html = `<p class="cmpnote">공장 밖 스크랩 탭: 넣은 순서대로 한 줄씩 들어갑니다.</p>` + SCRAP_KINDS.map(k => {
       const es = a.filter(e => e.loc === "WX" && e.grp === k).sort((x, y) => String(x.ts).localeCompare(String(y.ts)));
@@ -486,8 +551,8 @@ function renderSum() {
   }
   const adminCard = `<div class="card" style="margin:14px 0 28px"><h2>관리자</h2>
     <p>${S.admin ? "관리자 모드입니다. 모든 장소에 입력·삭제하고 잠금을 풀 수 있습니다." : "관리자 코드를 넣으면 모든 장소에 입력하고 잠금을 풀 수 있습니다 (원자재 화면과 같이 켜지고 꺼집니다)."}</p>
-    <p>담당자: 에스제이·동일·스카이는 원자재 담당자를 그대로 씁니다${S.admin ? ". 태흥·공장 밖은 아래에서 정합니다 (비워 두면 관리자만 입력)" : ""}.</p>
-    <div class="dlg-btns" style="justify-content:flex-start;flex-wrap:wrap">${S.admin ? `<button class="btn ghost" data-dlg-open="mgrs">태흥·공장 밖 담당자</button><button class="btn ghost" data-act="visopen">장소별 품목 숨기기</button><button class="btn ghost" data-act="adminoff">관리자 모드 끄기</button>` : `<button class="btn ghost" data-dlg-open="admin">관리자 모드 켜기</button>`}</div></div>`;
+    <p>담당자: 에스제이·동일·스카이는 원자재 담당자를 그대로 씁니다${S.admin ? ". 공장 밖은 아래에서 정합니다 (비워 두면 관리자만 입력)" : ""}.</p>
+    <div class="dlg-btns" style="justify-content:flex-start;flex-wrap:wrap">${S.admin ? `<button class="btn ghost" data-dlg-open="mgrs">공장 밖 담당자</button><button class="btn ghost" data-act="visopen">장소별 품목 숨기기</button><button class="btn ghost" data-act="adminoff">관리자 모드 끄기</button>` : `<button class="btn ghost" data-dlg-open="admin">관리자 모드 켜기</button>`}</div></div>`;
   $("view").innerHTML = `<div class="sum" style="padding-bottom:0">${html}</div>${adminCard}`;
 }
 
@@ -568,9 +633,9 @@ function drawDlg() {
   } else if (dlg.kind === "admin") {
     body = `<h2>관리자 모드</h2><input id="adminCode" type="password" inputmode="numeric" maxlength="12" placeholder="관리자 코드" autocomplete="off">`; ok = "켜기";
   } else {
-    const v = dlg.vals || { WT: mgrsOf("WT").join(", "), WX: mgrsOf("WX").join(", ") };
-    body = `<h2>${esc(mon)} 태흥·공장 밖 담당자</h2><p>원자재 화면에 등록한 이름(PIN 있는 사람)과 똑같이 쓰고, 여러 명이면 쉼표로 나눕니다. 비워 두면 관리자만 입력합니다.</p>
-      <div class="dlg-body">${["WT", "WX"].map(l => `<div class="mgr-row"><label for="mgr-${l}">${LOC[l]}</label><input id="mgr-${l}" value="${esc(v[l] || "")}" autocomplete="off"></div>`).join("")}</div>`;
+    const v = dlg.vals || { WX: mgrsOf("WX").join(", ") };
+    body = `<h2>${esc(mon)} 공장 밖 담당자</h2><p>원자재 화면에 등록한 이름(PIN 있는 사람)과 똑같이 쓰고, 여러 명이면 쉼표로 나눕니다. 비워 두면 관리자만 입력합니다.</p>
+      <div class="dlg-body">${["WX"].map(l => `<div class="mgr-row"><label for="mgr-${l}">${LOC[l]}</label><input id="mgr-${l}" value="${esc(v[l] || "")}" autocomplete="off"></div>`).join("")}</div>`;
     ok = "저장";
   }
   $("dlgRoot").innerHTML = `<div class="scrim" data-dlg="close"></div><div class="dlg" role="dialog" aria-modal="true">${body}
@@ -586,7 +651,7 @@ async function submitDlg() {
     if (!code) { dlg.err = "코드를 넣어 주세요."; drawDlg(); return }
     body = { action: "admin", admin: code };
   } else if (kind === "mgrs") {
-    dlg.vals = { WT: $("mgr-WT").value, WX: $("mgr-WX").value };
+    dlg.vals = { WX: $("mgr-WX").value };
     const mgrs = Object.fromEntries(Object.entries(dlg.vals).map(([k, v]) => [k, [...new Set(String(v).split(/[,，]/).map(s => s.trim()).filter(Boolean))]]));
     body = { action: "setmgrs", month: S.month, mgrs, by: S.me };
   } else {
@@ -629,7 +694,8 @@ document.addEventListener("click", ev => {
   if (d.item) { openSheet(d.item); return }
   if (d.mode) { sheet.mode = d.mode; sheet.err = ""; drawSheet(); return }
   if (d.k) { press(d.k); return }
-  if (d.fld) { sheet.fld = d.fld; updateDisp(); return }
+  if (d.fld) { if (!(sheet.editing && d.fld === "len")) { sheet.fld = d.fld; updateDisp() } return }
+  if (d.edit) { const e = S.entries.find(x => x.id === d.edit); if (e && sheet) startEdit(e); return }
   if (d.sloc) { sheet.loc = d.sloc; S.loc = d.sloc; store.set("wip-loc-" + S.sheet, S.loc); renderLocBar(); renderView(); drawSheet(); return }
   if (d.note !== undefined) { sheet.note = sheet.note === d.note ? "" : d.note; const n = $("note"); if (n) n.value = sheet.note; document.querySelectorAll("[data-note]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.note === sheet.note))); return }
   if (d.kind) { S.scrapKind = d.kind; renderView(); return }
@@ -646,6 +712,7 @@ document.addEventListener("click", ev => {
     case "grpclose": $("grpRoot").innerHTML = ""; return;
     case "close": closeSheet(); return;
     case "ssave": saveWip(); return;
+    case "canceledit": cancelEdit(); return;
     case "addns": addNs(); return;
     case "addscrap": addScrap(); return;
     case "showdel": S.showDel = !S.showDel; renderView(); if (sheet) drawSheet(); return;
