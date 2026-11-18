@@ -672,6 +672,17 @@ async function submitDlg() {
   mergeAndRender(true); refresh();
 }
 
+/* ⌫ 길게 누르면(0.5초) 그 칸을 한 번에 다 지운다 (원자재 화면과 같음). 손을 뗄 때 오는 click 은 무시 */
+let lpTimer = null, lpFired = false;
+const lpDone = () => { const f = lpFired; lpFired = false; return f };
+document.addEventListener("pointerdown", ev => {
+  if (!ev.target.closest?.('[data-k="back"]')) return;
+  lpFired = false; clearTimeout(lpTimer);
+  lpTimer = setTimeout(() => { lpFired = true; press("clear"); navigator.vibrate?.(30) }, 500);
+});
+["pointerup", "pointercancel", "pointerleave"].forEach(t => document.addEventListener(t, () => clearTimeout(lpTimer), true));
+document.addEventListener("contextmenu", ev => { if (ev.target.closest?.(".k")) ev.preventDefault() });
+
 let toastTimer;
 function toast(msg) {
   clearTimeout(toastTimer);
@@ -693,7 +704,7 @@ document.addEventListener("click", ev => {
   if (d.filt) { S.filt = d.filt; renderView(); return }
   if (d.item) { openSheet(d.item); return }
   if (d.mode) { sheet.mode = d.mode; sheet.err = ""; drawSheet(); return }
-  if (d.k) { press(d.k); return }
+  if (d.k) { if (d.k === "back" && lpDone()) return; press(d.k); return }
   if (d.fld) { if (!(sheet.editing && d.fld === "len")) { sheet.fld = d.fld; updateDisp() } return }
   if (d.edit) { const e = S.entries.find(x => x.id === d.edit); if (e && sheet) startEdit(e); return }
   if (d.sloc) { sheet.loc = d.sloc; S.loc = d.sloc; store.set("wip-loc-" + S.sheet, S.loc); renderLocBar(); renderView(); drawSheet(); return }

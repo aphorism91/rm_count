@@ -285,3 +285,5 @@ html.big body { zoom: 1.2 }
 .logsum { color: var(--muted); font-size: 12.5px; font-family: var(--font-num); text-align: right }
 /* 원자재 ↔ 재공품 화면 이동 */
 .formlink { white-space: nowrap; font-size: 12px; font-weight: 700; color: var(--accent); text-decoration: none; border: 1px solid var(--accent); border-radius: 6px; padding: 0 7px; line-height: 18px }
+/* 키패드 길게 누를 때 폰 메뉴·글자 선택이 뜨지 않게 */
+.k { -webkit-touch-callout: none }

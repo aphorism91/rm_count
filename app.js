@@ -1136,6 +1136,17 @@ function saveSheet() {
   closeSheet();
 }
 
+/* ⌫ 길게 누르면(0.5초) 한 번에 다 지운다 (사용자 요청 2026-11-18). 손을 뗄 때 오는 click 은 한 글자 지우기로 치지 않는다 */
+let lpTimer = null, lpFired = false;
+const lpDone = () => { const f = lpFired; lpFired = false; return f };
+document.addEventListener("pointerdown", ev => {
+  if (!ev.target.closest?.('[data-k="back"]')) return;
+  lpFired = false; clearTimeout(lpTimer);
+  lpTimer = setTimeout(() => { lpFired = true; keepFields(); press("clear"); navigator.vibrate?.(30) }, 500);
+});
+["pointerup", "pointercancel", "pointerleave"].forEach(t => document.addEventListener(t, () => clearTimeout(lpTimer), true));
+document.addEventListener("contextmenu", ev => { if (ev.target.closest?.(".k")) ev.preventDefault() });
+
 let toastTimer;
 function toast(msg) {
   $("toastRoot").innerHTML = `<div class="toast" role="status">${esc(msg)}</div>`;
@@ -1220,7 +1231,7 @@ document.addEventListener("click", ev => {
   if (!sheet) return;
   if (t.dataset.act === "close") { closeSheet(); return }
   if (t.dataset.sloc) { sheet.loc = t.dataset.sloc; sheet.dup = null; keepFields(); drawSheet(); return }
-  if (t.dataset.k) { keepFields(); press(t.dataset.k); return }
+  if (t.dataset.k) { if (t.dataset.k === "back" && lpDone()) return; keepFields(); press(t.dataset.k); return }
   if (t.dataset.act === "save") { keepFields(); t.disabled = true; saveSheet(); return }
   if (t.dataset.act === "canceledit") { sheet.editing = null; sheet.expr = ""; drawSheet(); return }
   if (t.dataset.edit) { const e = S.entries.find(x => x.id === t.dataset.edit); if (e && canChange(e)) { keepFields(); sheet.editing = e; sheet.expr = e.expr; sheet.memo = e.memo || ""; sheet.loc = e.loc; drawSheet() } return }
