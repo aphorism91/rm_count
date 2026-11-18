@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#1f5fbf">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>진천2 재공품 집계</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;700&family=IBM+Plex+Mono:wght@500;600&display=swap">
+<link rel="stylesheet" href="app.css">
+<style>
+/* 재공품 화면만 쓰는 것 (나머지는 원자재 화면과 같은 app.css) */
+.top h1 { font-size: 16px; white-space: nowrap }
+.top .subrow > * { white-space: nowrap }
+.sheets { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; padding-block: 2px 6px }
+.sheets button { border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 7px 4px; font-size: 14px; font-weight: 500 }
+.sheets button[aria-pressed="true"] { background: var(--fg); border-color: var(--fg); color: var(--bg); font-weight: 700 }
+.tabs.two { grid-template-columns: repeat(2, 1fr) }
+.form { margin-top: 10px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 8px }
+.form h3 { margin: 0; font-size: 14px }
+.form .row { display: flex; gap: 8px; align-items: flex-end }
+.form label { display: flex; flex-direction: column; gap: 3px; font-size: 12.5px; color: var(--muted); flex: 1; min-width: 0 }
+.form input, .form select { width: 100%; border: 1px solid var(--line); background: var(--bg); color: var(--fg); border-radius: 8px; padding: 10px; font: inherit; font-size: 16px }
+.form input.num { font-family: var(--font-num) }
+.form .btn { flex: none; padding: 11px 16px; font-size: 15px }
+.form .hint { margin: 0; font-size: 12px; color: var(--muted) }
+.form .err { color: var(--danger); font-size: 13px; min-height: 1em; margin: 0 }
+.modeseg { display: flex; gap: 6px }
+.modeseg .chip { font-size: 14px; padding: 6px 12px }
+.grpbox { margin-top: 10px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; overflow: hidden }
+.grpbox-h { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 9px 12px; background: var(--accent-soft); font-weight: 700; font-size: 14px }
+.grpbox-h small { font-family: var(--font-num); font-weight: 600; font-size: 13px; color: var(--fg) }
+.grpbox-h button { border: 1px solid var(--accent); background: var(--surface); color: var(--accent); border-radius: 6px; padding: 2px 8px; font-size: 12.5px; font-weight: 700 }
+.erow { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: center; padding: 8px 12px; border-top: 1px solid var(--line); font-size: 14px }
+.erow:first-of-type { border-top: 0 }
+.erow .v { font-family: var(--font-num); font-weight: 600; text-align: right }
+.erow .w { color: var(--muted); font-size: 12px; grid-column: 1 }
+.erow .acts button { border: 1px solid var(--danger); color: var(--danger); background: none; border-radius: 6px; padding: 2px 8px; font-size: 12.5px }
+.erow.del { opacity: .5 }
+.erow.del .v, .erow.del .t { text-decoration: line-through }
+.erow.pend .v::after { content: " ·보내는 중"; font-family: var(--font-body); font-size: 11px; color: var(--warn); font-weight: 500 }
+.lenrow { display: flex; justify-content: space-between; gap: 8px; padding: 6px 12px; font-family: var(--font-num); font-size: 13.5px; border-top: 1px dashed var(--line); background: var(--bg) }
+.lenrow b { font-weight: 600 }
+.sumtbl td.l, .sumtbl th.l { text-align: left; white-space: normal }
+.sumtbl tr.sub td { background: var(--accent-soft); font-weight: 700 }
+.sumtbl tr.tot td { background: var(--fg); color: var(--bg); font-weight: 700 }
+.needlogin { margin-top: 30px; text-align: center }
+.needlogin p { color: var(--muted) }
+.sheet .form { border: 0; padding: 8px 0 0; margin-top: 4px }
+/* 입력 창: 길이·수량 칸을 눌러 고르고 아래 키패드로 넣는다 */
+.wipdisp { gap: 6px; justify-content: flex-start }
+.fld { display: grid; grid-template-columns: 44px 1fr auto; align-items: baseline; gap: 8px; width: 100%; text-align: left; border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 6px 10px }
+.fld span { font-size: 13px; color: var(--muted) }
+.fld b { font-size: 22px; font-weight: 600; overflow-wrap: anywhere }
+.fld b i { font-style: normal; font-family: var(--font-body); font-size: 14px; font-weight: 500; color: var(--muted) }
+.fld small { font-size: 13px; color: var(--muted) }
+.fld.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset }
+.wipdisp .res { color: var(--muted); font-size: 13px; font-family: var(--font-num) }
+.wipdisp .res b { color: var(--fg); font-size: 15px }
+.notes { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px }
+.sheet .modeseg { margin-top: 6px }
+.sitepick small { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px }
+.sitepick .chip { text-align: left }
+.pill {display: inline-block; font-size: 12px; border-radius: 999px; padding: 0 8px; background: var(--key); color: var(--muted); margin-left: 6px; font-weight: 500 }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <div class="top"><h1>진천2 재공품 집계</h1><div class="right"><select id="monthSel" class="month" aria-label="조사월"><option>불러오는 중</option></select><div class="subrow"><a class="formlink" href="./">← 원자재</a><span class="adm" id="admBadge" hidden>관리자</span><span class="sync" id="sync"></span><button type="button" class="bigbtn" id="bigBtn" aria-pressed="false" aria-label="글자 크게">가<b>+</b></button></div></div></div>
+    <div class="sheets" id="sheetBar" role="group" aria-label="집계표 탭"></div>
+    <div class="locs" id="locBar" role="group" aria-label="장소"></div>
+  </div>
+  <div class="tabs two" role="tablist">
+    <button class="tab" role="tab" id="tab-input" aria-selected="true">입력</button>
+    <button class="tab" role="tab" id="tab-sum" aria-selected="false">집계표 보기</button>
+  </div>
+</header>
+
+<main class="wrap">
+  <div id="banners"></div>
+  <div id="view"></div>
+</main>
+
+<div id="sheetRoot"></div>
+<div id="dlgRoot"></div>
+<div id="grpRoot"></div>
+<div id="visRoot"></div>
+<div id="toastRoot"></div>
+<script src="config.js"></script>
+<script src="wip.js"></script>
+</body>
+</html>
