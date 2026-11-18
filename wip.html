@@ -41,6 +41,9 @@
 .erow .v { font-family: var(--font-num); font-weight: 600; text-align: right }
 .erow .w { color: var(--muted); font-size: 12px; grid-column: 1 }
 .erow .acts button { border: 1px solid var(--danger); color: var(--danger); background: none; border-radius: 6px; padding: 2px 8px; font-size: 12.5px }
+.erow .acts { display: flex; gap: 6px }
+.erow .acts button.editb { border-color: var(--line); color: var(--fg) }
+.erow .w .tag { font-weight: 500 }
 .erow.del { opacity: .5 }
 .erow.del .v, .erow.del .t { text-decoration: line-through }
 .erow.pend .v::after { content: " ·보내는 중"; font-family: var(--font-body); font-size: 11px; color: var(--warn); font-weight: 500 }
