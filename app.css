@@ -287,3 +287,16 @@ html.big body { zoom: 1.2 }
 .formlink { white-space: nowrap; font-size: 12px; font-weight: 700; color: var(--accent); text-decoration: none; border: 1px solid var(--accent); border-radius: 6px; padding: 0 7px; line-height: 18px }
 /* 키패드 길게 누를 때 폰 메뉴·글자 선택이 뜨지 않게 */
 .k { -webkit-touch-callout: none }
+/* 가독성 (2026-11-25): 품목명 크게, 수량 크게, 줄 여백 줄임, 품목군 제목 크게
+   시트류는 폭(b.key)만 진하게·파랗게, 두께·길이(.dim)는 흐리게. SOFFIT 은 높이·턱 숫자 진하게 + 턱 표시 */
+.item { padding: 8px 12px }
+.item .spec { font-size: 18px; font-weight: 500; line-height: 1.3 }
+.item .spec .len { font-weight: 500 }
+.spec .dim, .spechead .dim { color: var(--muted); font-weight: 400; font-size: .82em }
+.spec b.key, .spechead b.key { font-family: var(--font-num); font-weight: 700; color: var(--accent); font-size: 1.12em }
+.tukt { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 4px; font-family: var(--font-body); font-size: 12px; font-weight: 700; line-height: 18px; vertical-align: 2px }
+.tukt.yes { background: var(--warn-soft); color: var(--warn) }
+.tukt.no { background: var(--key); color: var(--muted) }
+.item .qty { font-size: 18px }
+.item .qty small { font-size: 11px; font-weight: 400; opacity: .75 }
+.grp { font-size: 15px; padding: 14px 0 6px }

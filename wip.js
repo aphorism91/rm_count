@@ -74,6 +74,17 @@ const itemLabel = it => it.label || it.spec || it.grp;
 const GRP_ALIAS = { "ONE SHEET": "원시트", "HALF SHEET": "하프시트", "W-HALF SHEET": "형상: ㅜ", "SHEET BAR": "시트바", "SHEET 보강대": "시트보강대",
   "PROP HEAD": "프롭헤드", "M/BEAM": "MB,EB", "HALF SHEET(면귀)": "하프시트 면귀", "HALF SHEET(콤비)": "하프시트 콤비", "W.E.P": "형상: ㅠ" };
 const grpLabel = g => GRP_ALIAS[g] ? `${g} (${GRP_ALIAS[g]})` : g;
+/* 목록 이름 강조 (원자재 화면과 같은 규칙): 시트류·A/G 는 폭을, SOFFIT 은 높이·턱(100 턱없음 / 116 턱있음)을 눈에 띄게 */
+const tukTag = n => n === "116" ? `<span class="tukt yes">턱O</span>` : n === "100" ? `<span class="tukt no">턱X</span>` : "";
+function labelHtml(it) {
+  const s = esc(itemLabel(it));
+  if (it.label) return s.replace(/\d+(\.\d+)?/g, n => `<b class="key">${n}</b>`);
+  if (/^SOFFIT/.test(it.grp)) {
+    let i = 0, tuk = "";
+    return s.replace(/\d+(\.\d+)?/g, n => { i++; if (i === 2) tuk = n; return i <= 2 ? `<b class="key">${n}</b>` : n }) + tukTag(tuk);
+  }
+  return s;
+}
 const wtOf = (it, e) => isKg(e) ? e.qty : it && it.uw && e.len ? e.len / 1000 * it.uw * e.qty : 0;
 
 /* ---------- 구글 시트와 주고받기 ---------- */
@@ -244,7 +255,7 @@ function renderWip() {
           const t = tally.get(it.key);
           const q = !t ? `<span class="qty zero">–<small>${esc(LOC[S.loc])}</small></span>`
             : `<span class="qty">${t.qty ? fmtInt(t.qty) + "本" : ""}${t.qty && t.kg ? " + " : ""}${t.kg ? fmt1(t.kg) + "kg" : ""}<small>${t.lens.size ? t.lens.size + "가지 길이" : ""}${t.lens.size && t.kg ? " · " : ""}${t.kg ? "중량" : ""}</small></span>`;
-          return `<button class="item${t ? " done" : ""}" data-item="${esc(it.key)}"><span class="spec">${esc(itemLabel(it))}${it.kgOnly ? `<span class="pill">kg</span>` : ""}</span>${q}${hiddenAt(it, S.loc) ? `<span class="meta"><span class="hidtag">${esc(LOC[S.loc])} 목록에서 숨김</span></span>` : ""}</button>`;
+          return `<button class="item${t ? " done" : ""}" data-item="${esc(it.key)}"><span class="spec">${labelHtml(it)}${it.kgOnly ? `<span class="pill">kg</span>` : ""}</span>${q}${hiddenAt(it, S.loc) ? `<span class="meta"><span class="hidtag">${esc(LOC[S.loc])} 목록에서 숨김</span></span>` : ""}</button>`;
         }).join("")}</div>`;
     }).join("") || `<div class="empty">검색에 맞는 품목이 없습니다.</div>`}</div>`;
 }
@@ -371,7 +382,7 @@ function drawSheet() {
   const v = sheetVals();
   $("sheetRoot").innerHTML = `<div class="scrim" data-act="close"></div>
     <div class="sheet${anim}" role="dialog" aria-modal="true" aria-label="재공품 입력">
-      <div class="sheet-head"><div><h2>${esc(grpLabel(it.grp))} · ${esc(itemLabel(it))}</h2></div><button class="x" data-act="close" aria-label="닫기">✕</button></div>
+      <div class="sheet-head"><div><h2 class="spechead">${esc(grpLabel(it.grp))} · ${labelHtml(it)}</h2></div><button class="x" data-act="close" aria-label="닫기">✕</button></div>
       <div class="locs">${locs}</div>
       ${block || `${sheet.editing ? `<div class="editing"><span>입력 고치는 중 (이전 ${esc(sheet.editing.expr)}${isKg(sheet.editing) ? "kg" : "本"}${isKg(sheet.editing) ? "" : `, 길이 ${sheet.editing.len}mm 그대로`})</span><button data-act="canceledit">새로 입력으로</button></div>` : modeSeg}
       <div class="display wipdisp" id="disp">${dispHtml()}</div>

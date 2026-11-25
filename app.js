@@ -82,6 +82,35 @@ const entryLabel = e => {
   return `${e.grp || ""} ${e.spec || ""}${e.len || ""} (행 ${e.r})`;
 };
 const whoName = n => n || "이름 없음";
+/* 품목 이름 강조 (2026-11-25 사용자 요청)
+ * - 시트류(ONE·HALF·W-HALF·W.E.P·면귀·콤비): 늘 같은 두께(63.5·78.5 …)와 길이(4820)는 흐리게, 가운데 폭을 눈에 띄게
+ * - SOFFIT: 앞 숫자(높이)와 뒤 숫자(턱: 100 = 턱 없음, 116 = 턱 있음) 둘 다 눈에 띄게 + 턱 표시 */
+const THICK = new Set(["63.5", "78.5", "78.6", "58.5"]);
+const isSheetGrp = g => /SHEET|W\.E\.P/.test(g) && !/SHEET BAR|보강대|계단/.test(g);
+const tukTag = n => n === "116" ? `<span class="tukt yes">턱O</span>` : n === "100" ? `<span class="tukt no">턱X</span>` : "";
+/* 괄호 밖 숫자만 바꾼다 ("(5T)63.5×150×" 의 5T 는 그대로) */
+const outsideParen = (s, f) => s.split(/(\([^)]*\))/).map((p, i) => i % 2 ? p : p.replace(/\d+(\.\d+)?/g, f)).join("");
+function specHtml(it) {
+  const s = esc(it.spec), len = it.len ?? "";
+  // 길이는 늘 같은 4820 만 흐리게 (2450·5420 같은 다른 길이는 줄을 구분해야 해서 그대로)
+  // 시트류는 두께(63.5× 등)를 아예 빼고 폭만 보인다 (2026-11-25 사용자 요청)
+  // W.E.P·W-HALF 는 앞 숫자를 보고 판단하므로 규격을 그대로 둔다 (사용자 요청)
+  if (isSheetGrp(it.grp) && !/^W\.E\.P|^W-HALF/.test(it.grp)) {
+    const noThick = s.split(/(\([^)]*\))/).map((p, i) => i % 2 ? p : p.replace(/(?:^|(?<=×))(?:63\.5|78\.5|78\.6|58\.5)×/g, "")).join("");
+    return outsideParen(noThick, n => `<b class="key">${n}</b>`) + `<span class="len${len === 4820 ? " dim" : ""}">${len}</span>`;
+  }
+  // W.E.P·W-HALF: 규격은 그대로, 맨 앞 숫자(폭)만 파란색 크게
+  if (/^W\.E\.P|^W-HALF/.test(it.grp)) {
+    let i = 0;
+    return outsideParen(s, n => ++i === 1 ? `<b class="key">${n}</b>` : n) + `<span class="len${len === 4820 ? " dim" : ""}">${len}</span>`;
+  }
+  if (it.grp === "SOFFIT") {
+    let i = 0, tuk = "";
+    const h = outsideParen(s, n => { i++; if (i === 2) tuk = n; return i <= 2 ? `<b class="key">${n}</b>` : n });
+    return h + `<span class="len">${len}</span>${tukTag(tuk)}`;
+  }
+  return `${s}<span class="len">${len}</span>`;
+}
 /* 품목코드·단위중량·집계표 행: 관리자 모드에서만 보여준다 (담당자 화면은 품목명·길이만) */
 const itemMeta = it => `${esc(it.code || "코드 없음")} · ${it.uw ?? "-"} kg/m · 행 ${it.r}`;
 /* 글자 크게 (이 폰에만 기억) */
@@ -879,7 +908,7 @@ function renderItems() {
     const pv = prevQty(it, S.loc);
     const pvTag = pv == null ? "" : `<span class="pvtag${hasHere && bigDiff(pv, here) ? " big" : ""}">지난달 ${pv ? fmtInt(pv) : "없음"}</span>`;
     html += `<button class="item${hasHere ? " done" : ""}" data-row="${it.r}">
-      <span class="spec">${esc(it.spec)}<span class="len">${it.len ?? ""}</span></span>
+      <span class="spec">${specHtml(it)}</span>
       <span class="qty${hasHere ? "" : " zero"}">${hasHere ? fmtInt(here) : "–"}<small>${all && all !== here ? "전체 " + fmtInt(all) : locName(S.loc)}</small></span>
       <span class="meta">${hidTag}${pvTag}${S.admin ? itemMeta(it) : ""}</span>
     </button>`;
@@ -933,7 +962,7 @@ function renderAllItems() {
     }
     const all = byItem.get(it.r);
     html += `<div class="item ro${all ? " done" : ""}">
-      <span class="spec">${esc(it.spec)}<span class="len">${it.len ?? ""}</span></span>
+      <span class="spec">${specHtml(it)}</span>
       <span class="qty${all ? "" : " zero"}">${all ? fmtInt(all) : "–"}<small>${all ? "합계" : ""}</small></span>
       <span class="locq">${LOCS.map(l => cell(it.r, l)).join("")}</span>
     </div>`;
@@ -1075,7 +1104,7 @@ function drawSheet() {
   const anim = sheet.fresh ? " anim" : "";
   sheet.fresh = false;
   const head = it
-    ? `<h2>${esc(grpLabel(it.grp))} · ${esc(it.spec)}<span class="num">${it.len ?? ""}</span></h2>${S.admin ? `<div class="meta">${itemMeta(it)}${S.alias && [...S.alias].some(([, f]) => f === it.r) ? ` · 같은 규격 ${[...S.alias].filter(([, f]) => f === it.r).map(([d]) => d + "행").join(", ")} 합침` : ""}</div>` : ""}`
+    ? `<h2 class="spechead">${esc(grpLabel(it.grp))} · ${specHtml(it)}</h2>${S.admin ? `<div class="meta">${itemMeta(it)}${S.alias && [...S.alias].some(([, f]) => f === it.r) ? ` · 같은 규격 ${[...S.alias].filter(([, f]) => f === it.r).map(([d]) => d + "행").join(", ")} 합침` : ""}</div>` : ""}`
     : `<h2>목록에 없는 품목</h2><div class="meta">집계표 '당월 추가품목'으로 따로 정리됩니다</div>`;
   $("sheetRoot").innerHTML = `
     <div class="scrim" data-act="close"></div>
