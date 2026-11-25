@@ -92,17 +92,17 @@ const tukTag = n => n === "116" ? `<span class="tukt yes">턱O</span>` : n === "
 const outsideParen = (s, f) => s.split(/(\([^)]*\))/).map((p, i) => i % 2 ? p : p.replace(/\d+(\.\d+)?/g, f)).join("");
 function specHtml(it) {
   const s = esc(it.spec), len = it.len ?? "";
-  // 길이는 늘 같은 4820 만 흐리게 (2450·5420 같은 다른 길이는 줄을 구분해야 해서 그대로)
+  // 길이는 원래대로 (2026-11-25 사용자 요청으로 4820 흐리게 한 것 되돌림)
   // 시트류는 두께(63.5× 등)를 아예 빼고 폭만 보인다 (2026-11-25 사용자 요청)
   // W.E.P·W-HALF 는 앞 숫자를 보고 판단하므로 규격을 그대로 둔다 (사용자 요청)
   if (isSheetGrp(it.grp) && !/^W\.E\.P|^W-HALF/.test(it.grp)) {
     const noThick = s.split(/(\([^)]*\))/).map((p, i) => i % 2 ? p : p.replace(/(?:^|(?<=×))(?:63\.5|78\.5|78\.6|58\.5)×/g, "")).join("");
-    return outsideParen(noThick, n => `<b class="key">${n}</b>`) + `<span class="len${len === 4820 ? " dim" : ""}">${len}</span>`;
+    return outsideParen(noThick, n => `<b class="key">${n}</b>`) + `<span class="len">${len}</span>`;
   }
   // W.E.P·W-HALF: 규격은 그대로, 맨 앞 숫자(폭)만 파란색 크게
   if (/^W\.E\.P|^W-HALF/.test(it.grp)) {
     let i = 0;
-    return outsideParen(s, n => ++i === 1 ? `<b class="key">${n}</b>` : n) + `<span class="len${len === 4820 ? " dim" : ""}">${len}</span>`;
+    return outsideParen(s, n => ++i === 1 ? `<b class="key">${n}</b>` : n) + `<span class="len">${len}</span>`;
   }
   if (it.grp === "SOFFIT") {
     let i = 0, tuk = "";

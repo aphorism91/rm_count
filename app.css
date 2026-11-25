@@ -293,7 +293,11 @@ html.big body { zoom: 1.2 }
 .item .spec { font-size: 18px; font-weight: 500; line-height: 1.3 }
 .item .spec .len { font-weight: 500 }
 .spec .dim, .spechead .dim { color: var(--muted); font-weight: 400; font-size: .82em }
-.spec b.key, .spechead b.key { font-family: var(--font-num); font-weight: 700; color: var(--accent); font-size: 1.12em }
+.spec b.key, .spechead b.key { font-family: var(--font-num); font-weight: 700; color: var(--hl); font-size: 1.12em }
+/* 강조 숫자 색: 자주 (2026-11-25 사용자 선택). 어두운 화면에서는 밝은 자주 */
+:root { --hl: #c2185b }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --hl: #f06292 } }
+:root[data-theme="dark"] { --hl: #f06292 }
 .tukt { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 4px; font-family: var(--font-body); font-size: 12px; font-weight: 700; line-height: 18px; vertical-align: 2px }
 .tukt.yes { background: var(--warn-soft); color: var(--warn) }
 .tukt.no { background: var(--key); color: var(--muted) }
