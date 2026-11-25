@@ -304,3 +304,9 @@ html.big body { zoom: 1.2 }
 .item .qty { font-size: 18px }
 .item .qty small { font-size: 11px; font-weight: 400; opacity: .75 }
 .grp { font-size: 15px; padding: 14px 0 6px }
+/* 반기 조사 구역(TAG NO.) 칸 (6·12월) */
+.zonebox { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 10px; margin-top: 8px; border: 1px solid var(--hl); border-radius: 8px; padding: 6px 10px; background: var(--surface) }
+.zonebox label { font-weight: 700; font-size: 14px; color: var(--hl); display: flex; flex-direction: column; line-height: 1.2 }
+.zonebox label small { font-weight: 400; font-size: 11px; color: var(--muted) }
+.zonebox input { width: 100%; border: 1px solid var(--line); background: var(--bg); color: var(--fg); border-radius: 6px; padding: 8px 10px; font: inherit; font-size: 17px; font-family: var(--font-num) }
+.ztag { color: var(--hl); font-family: var(--font-body); font-size: 12px }

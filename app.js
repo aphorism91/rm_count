@@ -325,7 +325,7 @@ function merge() {
   let list = S.server.map(e => ({ ...e }));
   for (const op of S.outbox) {
     if (op.op === "add" && op.entry.m === S.month && !list.some(e => e.id === op.entry.id)) list.push({ ...op.entry, pending: true });
-    if (op.op === "edit") list = list.map(e => e.id === op.id ? { ...e, expr: op.expr, qty: op.qty, memo: op.memo, pending: true,
+    if (op.op === "edit") list = list.map(e => e.id === op.id ? { ...e, expr: op.expr, qty: op.qty, memo: op.memo, ...(op.zone !== undefined ? { zone: op.zone } : {}), pending: true,
       edits: [...(e.edits || []), { expr: e.expr, qty: e.qty, memo: e.memo, at: op.at, by: op.by }] } : e);
     if (op.op === "del") list = list.map(e => e.id === op.id ? { ...e, del: true, delBy: op.by, delAt: op.at, pending: true } : e);
   }
@@ -431,7 +431,7 @@ async function flush() {
       let j;
       try {
         j = op.op === "add" ? await apiPost({ action: "add", entry: op.entry })
-          : op.op === "edit" ? await apiPost({ action: "edit", id: op.id, expr: op.expr, qty: op.qty, memo: op.memo, by: op.by })
+          : op.op === "edit" ? await apiPost({ action: "edit", id: op.id, expr: op.expr, qty: op.qty, memo: op.memo, zone: op.zone, by: op.by })
           : await apiPost({ action: "del", id: op.id, by: op.by });
       } catch { failed = true; break }  // 통신 실패: 대기열에 그대로 두고 다음에 다시 보낸다
       if (j.ok === false && j.error === "code") { failed = true; openSetup("현장 코드가 바뀌었습니다. 새 코드를 입력해 주세요."); break }
@@ -457,8 +457,10 @@ function addEntry(data) {
   enqueue({ op: "add", entry });
   toast(`저장: ${locName(entry.loc)} ${fmtInt(entry.qty)}本`);
 }
-function editEntry(e, expr, qty, memo) {
-  enqueue({ op: "edit", id: e.id, expr, qty, memo, by: S.me, at: new Date().toISOString() });
+/* 반기 조사(6월말·12월말): 입력마다 구역(TAG NO.)을 받는다 → 엑셀의 장소별 TAG NO. 칸 */
+const isHalf = () => /-(06|12)$/.test(S.month || "");
+function editEntry(e, expr, qty, memo, zone) {
+  enqueue({ op: "edit", id: e.id, expr, qty, memo, zone, by: S.me, at: new Date().toISOString() });
   toast("수정했습니다 (이전 값은 내역에 남습니다)");
 }
 function deleteEntry(e) {
@@ -937,7 +939,7 @@ function drawLog(target, q, showDel, loc, emptyMsg) {
     return `<div class="entry${e.del ? " del" : ""}">
       <span class="what"><span class="tag">${esc(locName(e.loc))}</span> ${esc(entryLabel(e))}</span>
       <span class="how">${fmtInt(e.qty)}本<small>${esc(e.expr)}</small></span>
-      <span class="who"><span>${fmtTime(e.ts)}</span><span>${esc(whoName(e.by))}</span>${e.memo ? `<span>메모: ${esc(e.memo)}</span>` : ""}
+      <span class="who"><span>${fmtTime(e.ts)}</span><span>${esc(whoName(e.by))}</span>${e.zone ? `<span>구역 ${esc(e.zone)}</span>` : ""}${e.memo ? `<span>메모: ${esc(e.memo)}</span>` : ""}
         ${e.pending ? `<span class="tag edit">전송 대기</span>` : ""}
         ${e.edits?.length ? `<span class="tag edit">수정 ${e.edits.length}회: ${hist}${esc(e.expr)}</span>` : ""}
         ${e.del ? `<span class="tag delt">삭제됨 · ${esc(whoName(e.delBy))}</span>` : ""}</span>
@@ -1018,7 +1020,7 @@ function renderSum() {
 let sheet = null;
 function openSheet(row, opts = {}) {
   const it = row != null ? S.byRow.get(row) : null;
-  sheet = { it, custom: row == null, loc: S.loc, expr: opts.expr || "", memo: opts.memo || "", editing: opts.editing || null,
+  sheet = { it, custom: row == null, loc: S.loc, expr: opts.expr || "", memo: opts.memo || "", editing: opts.editing || null, zone: store.get("rm-zone-" + S.loc, ""),
     cname: opts.cname || "", clen: opts.clen || "", fresh: true };
   drawSheet();
 }
@@ -1080,7 +1082,7 @@ function prevHtml() {
   const prev = it ? S.entries.filter(e => e.r === it.r && !e.del).sort((a, b) => String(a.ts || "").localeCompare(String(b.ts || ""))) : [];
   if (!prev.length) return "";
   return `<h3>이 품목에 입력된 기록 (모든 장소)</h3>${prev.map(e => `
-    <div class="prow"><span class="tag">${isLocked(e.loc) ? LOCK_SVG : ""}${esc(locName(e.loc))}</span><span class="e">${esc(e.expr)} = ${fmtInt(e.qty)}${e.memo ? ` · ${esc(e.memo)}` : ""} · ${esc(whoName(e.by))}</span>
+    <div class="prow"><span class="tag">${isLocked(e.loc) ? LOCK_SVG : ""}${esc(locName(e.loc))}</span><span class="e">${e.zone ? `<b class="ztag">구역 ${esc(e.zone)}</b> ` : ""}${esc(e.expr)} = ${fmtInt(e.qty)}${e.memo ? ` · ${esc(e.memo)}` : ""} · ${esc(whoName(e.by))}</span>
     <span class="acts">${canChange(e) ? `<button data-edit="${e.id}">수정</button>${sheet.confirmDel === e.id ? `<button class="danger" data-delok="${e.id}">삭제 확인</button>` : `<button data-del="${e.id}">삭제</button>`}`
       : `<span class="why">${isLocked(e.loc) ? "잠김" : !isMgr(e.loc) ? "담당자만" : "입력자만 수정"}</span>`}</span></div>`).join("")}`;
 }
@@ -1118,6 +1120,7 @@ function drawSheet() {
         <div class="expr" id="dexpr">${exprHtml()}</div>
         <div class="res" id="dres">${resHtml()}</div>
       </div>
+      ${isHalf() ? `<div class="zonebox"><label for="zone">구역<small>TAG NO. · 반기 조사 필수</small></label><input id="zone" placeholder="예: 102" value="${esc(sheet.zone ?? "")}" maxlength="30" autocomplete="off"></div>` : ""}
       <div class="memo"><input id="memo" placeholder="메모 (선택: 섹터 1-11, 랙 위치 등)" value="${esc(sheet.memo)}"></div>
       <div class="keys">
         ${["7", "8", "9"].map(k => `<button class="k" data-k="${k}">${k}</button>`).join("")}<button class="k fn" data-k="back" aria-label="한 글자 지우기">⌫</button>
@@ -1147,20 +1150,24 @@ function saveSheet() {
   // 같은 값을 방금 저장했으면 한 번 경고하고, 한 번 더 누르면 저장한다
   if (!sheet.dup) { const d = findDup(val); if (d) { sheet.dup = d; updateDisplay(); return } }
   const memo = ($("memo")?.value || "").trim();
+  // 반기(6·12월) 조사는 구역(TAG NO.)을 꼭 넣는다. 다음 입력에도 같은 구역이 미리 채워진다(장소별로 이 폰에 기억)
+  const zone = isHalf() ? ($("zone")?.value || "").trim().slice(0, 30) : (sheet.editing?.zone || "");
+  if (isHalf() && !zone) { toast("반기 조사는 구역(TAG NO.)을 넣어야 저장됩니다"); $("zone")?.focus(); return }
+  if (isHalf()) store.set("rm-zone-" + sheet.loc, zone);
   const expr = sheet.expr;
   if (sheet.editing) {
     const e = sheet.editing;
     if (sheet.loc !== e.loc) {
       deleteEntry(e);
-      addEntry({ r: e.r, grp: e.grp, spec: e.spec, len: e.len, code: e.code, custom: e.custom, loc: sheet.loc, expr, qty: val, memo });
-    } else editEntry(e, expr, val, memo);
+      addEntry({ r: e.r, grp: e.grp, spec: e.spec, len: e.len, code: e.code, custom: e.custom, loc: sheet.loc, expr, qty: val, memo, zone });
+    } else editEntry(e, expr, val, memo, zone);
   } else if (sheet.custom) {
     const cname = ($("cname")?.value || "").trim(), clen = Number(($("clen")?.value || "").trim()) || null;
     if (!cname) return;
-    addEntry({ r: null, custom: { name: cname, len: clen }, loc: sheet.loc, expr, qty: val, memo });
+    addEntry({ r: null, custom: { name: cname, len: clen }, loc: sheet.loc, expr, qty: val, memo, zone });
   } else {
     const it = sheet.it;
-    addEntry({ r: it.r, grp: it.grp, spec: it.spec, len: it.len, code: it.code, loc: sheet.loc, expr, qty: val, memo });
+    addEntry({ r: it.r, grp: it.grp, spec: it.spec, len: it.len, code: it.code, loc: sheet.loc, expr, qty: val, memo, zone });
   }
   closeSheet();
 }
@@ -1263,13 +1270,14 @@ document.addEventListener("click", ev => {
   if (t.dataset.k) { if (t.dataset.k === "back" && lpDone()) return; keepFields(); press(t.dataset.k); return }
   if (t.dataset.act === "save") { keepFields(); t.disabled = true; saveSheet(); return }
   if (t.dataset.act === "canceledit") { sheet.editing = null; sheet.expr = ""; drawSheet(); return }
-  if (t.dataset.edit) { const e = S.entries.find(x => x.id === t.dataset.edit); if (e && canChange(e)) { keepFields(); sheet.editing = e; sheet.expr = e.expr; sheet.memo = e.memo || ""; sheet.loc = e.loc; drawSheet() } return }
+  if (t.dataset.edit) { const e = S.entries.find(x => x.id === t.dataset.edit); if (e && canChange(e)) { keepFields(); sheet.editing = e; sheet.expr = e.expr; sheet.memo = e.memo || ""; sheet.zone = e.zone || ""; sheet.loc = e.loc; drawSheet() } return }
   if (t.dataset.del) { keepFields(); sheet.confirmDel = t.dataset.del; drawPrev(); return }
   if (t.dataset.delok) { const e = S.entries.find(x => x.id === t.dataset.delok); sheet.confirmDel = null; if (e && canChange(e)) deleteEntry(e); drawPrev(); return }
 });
 function keepFields() {
   if (!sheet) return;
   if ($("memo")) sheet.memo = $("memo").value;
+  if ($("zone")) sheet.zone = $("zone").value;
   if ($("cname")) sheet.cname = $("cname").value;
   if ($("clen")) sheet.clen = $("clen").value;
 }
