@@ -108,7 +108,7 @@ function merge() {
   let list = S.server.map(e => ({ ...e }));
   for (const op of S.outbox) {
     if (op.op === "add" && op.entry.m === S.month && !list.some(e => e.id === op.entry.id)) list.push({ ...op.entry, pending: true });
-    if (op.op === "edit") list = list.map(e => e.id === op.id ? { ...e, expr: op.expr, qty: op.qty, memo: op.memo, pending: true,
+    if (op.op === "edit") list = list.map(e => e.id === op.id ? { ...e, expr: op.expr, qty: op.qty, memo: op.memo, ...(op.zone !== undefined ? { zone: op.zone } : {}), pending: true,
       edits: [...(e.edits || []), { expr: e.expr, qty: e.qty, memo: e.memo, at: op.at, by: op.by }] } : e);
     if (op.op === "del") list = list.map(e => e.id === op.id ? { ...e, del: true, delBy: op.by, delAt: op.at, pending: true } : e);
   }
@@ -147,7 +147,7 @@ async function flush() {
       let j;
       try {
         j = op.op === "add" ? await apiPost({ action: "add", entry: op.entry })
-          : op.op === "edit" ? await apiPost({ action: "edit", id: op.id, expr: op.expr, qty: op.qty, memo: op.memo, by: op.by })
+          : op.op === "edit" ? await apiPost({ action: "edit", id: op.id, expr: op.expr, qty: op.qty, memo: op.memo, zone: op.zone, by: op.by })
           : await apiPost({ action: "del", id: op.id, by: op.by });
       }
       catch { failed = true; break }
@@ -279,7 +279,7 @@ let sheet = null;  // {key, loc, mode:"len"|"kg", fld:"len"|"qty", len, qty, kg,
 function openSheet(key) {
   const it = itemByKey(key); if (!it) return;
   sheet = { key, loc: S.loc, mode: it.kgOnly ? "kg" : "len", fld: it.fixLen ? "qty" : "len",
-    len: it.fixLen ? String(it.fixLen) : "", qty: "", kg: "", note: "", err: "", fresh: true };
+    len: it.fixLen ? String(it.fixLen) : "", qty: "", kg: "", note: "", zone: store.get("wip-zone-" + S.loc, ""), err: "", fresh: true };
   drawSheet();
 }
 function closeSheet() { sheet = null; $("sheetRoot").innerHTML = "" }
@@ -336,7 +336,7 @@ const minsAgo = ts => { const m = Math.floor((Date.now() - new Date(ts).getTime(
 function startEdit(e) {
   sheet.editing = e; sheet.mode = isKg(e) ? "kg" : "len"; sheet.fld = "qty";
   sheet.len = isKg(e) ? "" : String(e.len); sheet.qty = isKg(e) ? "" : e.expr; sheet.kg = isKg(e) ? e.expr : "";
-  sheet.note = e.memo || ""; sheet.err = ""; sheet.dup = null; sheet.lenWarn = null;
+  sheet.note = e.memo || ""; sheet.zone = e.zone || ""; sheet.err = ""; sheet.dup = null; sheet.lenWarn = null;
   drawSheet();
   document.querySelector(".sheet")?.scrollTo({ top: 0, behavior: "smooth" });
 }
@@ -345,8 +345,8 @@ function cancelEdit() {
   Object.assign(sheet, { editing: null, mode: it.kgOnly ? "kg" : "len", fld: it.fixLen ? "qty" : "len", len: it.fixLen ? String(it.fixLen) : "", qty: "", kg: "", err: "" });
   drawSheet();
 }
-function editEntry(e, expr, qty, memo) {
-  enqueue({ op: "edit", id: e.id, expr, qty, memo, by: S.me, at: new Date().toISOString() });
+function editEntry(e, expr, qty, memo, zone) {
+  enqueue({ op: "edit", id: e.id, expr, qty, memo, zone, by: S.me, at: new Date().toISOString() });
   toast("수정했습니다 (이전 값은 기록에 남습니다)");
 }
 function entryListHtml(it) {
@@ -361,7 +361,7 @@ function entryListHtml(it) {
   const totWt = live.reduce((s, e) => s + wtOf(it, e), 0);
   const w = sheetWritable();
   const rows = list.slice().sort((a, b) => String(b.ts).localeCompare(String(a.ts))).map(e => `
-    <div class="erow${e.del ? " del" : ""}${e.pending ? " pend" : ""}"><span class="t">${isKg(e) ? "중량" : `${e.len ?? "?"} mm`}${e.memo ? ` <span class="pill">${esc(e.memo)}</span>` : ""}</span><span class="v">${isKg(e) ? fmt1(e.qty) + " kg" : fmtInt(e.qty) + "本"}</span>
+    <div class="erow${e.del ? " del" : ""}${e.pending ? " pend" : ""}"><span class="t">${isKg(e) ? "중량" : `${e.len ?? "?"} mm`}${e.zone ? ` <b class="ztag">구역 ${esc(e.zone)}</b>` : ""}${e.memo ? ` <span class="pill">${esc(e.memo)}</span>` : ""}</span><span class="v">${isKg(e) ? fmt1(e.qty) + " kg" : fmtInt(e.qty) + "本"}</span>
       <span class="acts">${!e.del && w && mine(e) ? `<button class="editb" data-edit="${esc(e.id)}">수정</button><button data-del="${esc(e.id)}">삭제</button>` : ""}</span>
       <span class="w">${esc(e.expr)} · ${esc(e.by || "")} ${fmtTime(e.ts)}${e.edits?.length ? ` · <span class="tag edit">수정 ${e.edits.length}회: ${e.edits.map(x => esc(x.expr)).join("→")}→${esc(e.expr)}</span>` : ""}${e.del ? ` · 삭제 ${esc(e.delBy || "")}` : ""}</span></div>`).join("");
   return `<div class="grpbox"><div class="grpbox-h"><span>${esc(LOC[sheet.loc])} 입력 ${live.length}건</span><small>${groups.length ? fmtInt(groups.reduce((s, g) => s + g.qty, 0)) + "本" : ""}${kgSum ? ` + ${fmt1(kgSum)}kg` : ""}${totWt ? ` ≈ ${fmt1(totWt)}kg` : ""}</small></div>
@@ -386,6 +386,7 @@ function drawSheet() {
       <div class="locs">${locs}</div>
       ${block || `${sheet.editing ? `<div class="editing"><span>입력 고치는 중 (이전 ${esc(sheet.editing.expr)}${isKg(sheet.editing) ? "kg" : "本"}${isKg(sheet.editing) ? "" : `, 길이 ${sheet.editing.len}mm 그대로`})</span><button data-act="canceledit">새로 입력으로</button></div>` : modeSeg}
       <div class="display wipdisp" id="disp">${dispHtml()}</div>
+      <div class="zonebox"><label for="zone">구역<small>TAG NO. · 필수</small></label><input id="zone" placeholder="예: 102" value="${esc(sheet.zone ?? "")}" maxlength="30" autocomplete="off"></div>
       <div class="memo">${notes}<input id="note" placeholder="특이사항 (선택${it.notes && it.notes.length ? ", 위에서 고르거나 직접" : ""})" value="${esc(sheet.note)}" maxlength="40" autocomplete="off"></div>
       <div class="err" id="serr" style="color:var(--danger);font-size:13px;min-height:1em">${esc(sheet.err)}</div>
       <div class="keys">
@@ -424,10 +425,15 @@ function saveWip() {
   if (!v.ok) { sheet.err = sheet.mode === "kg" ? "중량을 넣어 주세요." : !v.lenOk ? "길이를 mm 숫자로 넣어 주세요." : "수량을 넣어 주세요."; updateDisp(); return }
   const note = ($("note")?.value || "").trim().slice(0, 40);
   sheet.note = note;
+  // 구역(TAG NO.)은 꼭 넣는다 (원자재와 같음, 2026-11-25). 그 장소 직전 구역이 다음에도 미리 채워진다
+  const zone = ($("zone")?.value || "").trim().slice(0, 30);
+  sheet.zone = zone;
+  if (!zone) { sheet.err = "구역(TAG NO.)을 넣어야 저장됩니다."; updateDisp(); $("zone")?.focus(); return }
+  store.set("wip-zone-" + sheet.loc, zone);
   if (sheet.editing) {
     const e = sheet.editing;
     if (!(S.admin || e.by === S.me)) { toast("다른 사람이 입력한 기록은 고칠 수 없습니다"); return }
-    editEntry(e, sheet.mode === "kg" ? sheet.kg : sheet.qty, sheet.mode === "kg" ? v.kg : v.qty, note);
+    editEntry(e, sheet.mode === "kg" ? sheet.kg : sheet.qty, sheet.mode === "kg" ? v.kg : v.qty, note, zone);
     cancelEdit(); return;
   }
   // 길이 칸을 건너뛰고 수량으로 바로 왔어도 이상한 길이는 한 번 묻는다
@@ -440,10 +446,10 @@ function saveWip() {
   }
   sheet.dup = null; sheet.lenWarn = null;
   if (sheet.mode === "kg") {
-    addEntry({ loc: sheet.loc, grp: it.grp, spec: it.spec, len: null, code: "kg", expr: sheet.kg, qty: v.kg, memo: note }, `저장: ${itemLabel(it)} ${fmt1(v.kg)}kg`);
+    addEntry({ loc: sheet.loc, grp: it.grp, spec: it.spec, len: null, code: "kg", expr: sheet.kg, qty: v.kg, memo: note, zone }, `저장: ${itemLabel(it)} ${fmt1(v.kg)}kg`);
     sheet.kg = "";
   } else {
-    addEntry({ loc: sheet.loc, grp: it.grp, spec: it.spec, len: v.len, code: "", expr: sheet.qty, qty: v.qty, memo: note }, `저장: ${v.len}mm ${fmtInt(v.qty)}本`);
+    addEntry({ loc: sheet.loc, grp: it.grp, spec: it.spec, len: v.len, code: "", expr: sheet.qty, qty: v.qty, memo: note, zone }, `저장: ${v.len}mm ${fmtInt(v.qty)}本`);
     sheet.qty = "";
     if (!it.fixLen) { sheet.len = ""; sheet.fld = "len" }
   }
@@ -564,7 +570,10 @@ function renderSum() {
     <p>${S.admin ? "관리자 모드입니다. 모든 장소에 입력·삭제하고 잠금을 풀 수 있습니다." : "관리자 코드를 넣으면 모든 장소에 입력하고 잠금을 풀 수 있습니다 (원자재 화면과 같이 켜지고 꺼집니다)."}</p>
     <p>담당자: 에스제이·동일·스카이는 원자재 담당자를 그대로 씁니다${S.admin ? ". 공장 밖은 아래에서 정합니다 (비워 두면 관리자만 입력)" : ""}.</p>
     <div class="dlg-btns" style="justify-content:flex-start;flex-wrap:wrap">${S.admin ? `<button class="btn ghost" data-dlg-open="mgrs">공장 밖 담당자</button><button class="btn ghost" data-act="visopen">장소별 품목 숨기기</button><button class="btn ghost" data-act="adminoff">관리자 모드 끄기</button>` : `<button class="btn ghost" data-dlg-open="admin">관리자 모드 켜기</button>`}</div></div>`;
-  $("view").innerHTML = `<div class="sum" style="padding-bottom:0">${html}</div>${adminCard}`;
+  const printCard = `<div class="card" style="margin-top:14px"><h2>구역별 실사표 인쇄</h2>
+    <p>재공품 탭 입력을 장소 → 구역별로 표로 뽑습니다(같은 품목도 구역이 다르면 따로). 반기 회계법인 실사 때 대조용입니다. PC에서 열면 깔끔하게 인쇄되고 PDF로도 저장됩니다.</p>
+    <button class="btn" data-act="zoneprint">구역별 실사표 열기</button></div>`;
+  $("view").innerHTML = `<div class="sum" style="padding-bottom:0">${html}</div>${printCard}${adminCard}`;
 }
 
 /* ---------- 장소별 품목 숨기기 (관리자): 그 장소에 없는 품목은 재공품 입력 목록에서 숨긴다 ----------
@@ -625,6 +634,29 @@ async function saveVis() {
   vis.dirty = false;
   toast(`${LOC[vis.loc]} 품목 설정을 저장했습니다`);
   drawVis(); renderAll();
+}
+
+/* ---------- 구역별 실사표 인쇄 (print.js): 재공품 탭 입력을 장소·구역별로, 같은 품목·길이·특이사항은 한 줄로 ---------- */
+function printZones() {
+  if (typeof window.openZonePrint !== "function") { toast("인쇄 화면을 불러오지 못했습니다. 새로고침 후 다시 눌러 주세요."); return }
+  const order = new Map(S.items.map((it, i) => [it.key, i]));
+  const groups = new Map();
+  for (const e of active()) {
+    if (sheetOf(e) !== "wip") continue;
+    const gk = e.loc + "|" + (e.zone || "");
+    if (!groups.has(gk)) groups.set(gk, new Map());
+    const ik = `${itemKey(e)}|${isKg(e) ? "kg" : e.len}|${e.memo || ""}`;
+    const g = groups.get(gk), x = g.get(ik) || { e, exprs: [], qty: 0, by: new Set() };
+    x.exprs.push(e.expr); x.qty += e.qty; x.by.add(e.by || ""); g.set(ik, x);
+  }
+  const locOrder = SHEETS[0].locs;
+  const sections = [...groups.entries()].map(([gk, g]) => {
+    const [loc, zone] = gk.split("|");
+    const list = [...g.values()].sort((a, b) => (order.get(itemKey(a.e)) ?? 1e9) - (order.get(itemKey(b.e)) ?? 1e9) || isKg(a.e) - isKg(b.e) || (a.e.len || 0) - (b.e.len || 0));
+    const rows = list.map(x => { const it = itemByKey(itemKey(x.e)); return [x.e.grp, it ? itemLabel(it) : x.e.spec, isKg(x.e) ? "중량" : `${x.e.len} mm`, x.e.memo || "", x.exprs.join(" + "), isKg(x.e) ? fmt1(x.qty) + " kg" : fmtInt(x.qty) + "本", [...x.by].join(", ")] });
+    return { loc, locName: LOC[loc] || loc, locOrder: locOrder.indexOf(loc), zone, rows };
+  });
+  window.openZonePrint({ title: "진천2 재공품", month: monthLabel(S.month), headers: ["품명", "규격", "길이", "특이사항", "입력", "수량", "입력자"], numCols: [5], sections });
 }
 
 /* ---------- 대화창: 잠금·해제·관리자·담당자 ---------- */
@@ -718,7 +750,7 @@ document.addEventListener("click", ev => {
   if (d.k) { if (d.k === "back" && lpDone()) return; press(d.k); return }
   if (d.fld) { if (!(sheet.editing && d.fld === "len")) { sheet.fld = d.fld; updateDisp() } return }
   if (d.edit) { const e = S.entries.find(x => x.id === d.edit); if (e && sheet) startEdit(e); return }
-  if (d.sloc) { sheet.loc = d.sloc; S.loc = d.sloc; store.set("wip-loc-" + S.sheet, S.loc); renderLocBar(); renderView(); drawSheet(); return }
+  if (d.sloc) { sheet.loc = d.sloc; S.loc = d.sloc; if (!sheet.editing) sheet.zone = store.get("wip-zone-" + d.sloc, ""); store.set("wip-loc-" + S.sheet, S.loc); renderLocBar(); renderView(); drawSheet(); return }
   if (d.note !== undefined) { sheet.note = sheet.note === d.note ? "" : d.note; const n = $("note"); if (n) n.value = sheet.note; document.querySelectorAll("[data-note]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.note === sheet.note))); return }
   if (d.kind) { S.scrapKind = d.kind; renderView(); return }
   if (d.site) { S.nsSite = d.site; renderView(); $("nsKg")?.focus(); return }
@@ -742,6 +774,7 @@ document.addEventListener("click", ev => {
     case "retry": S.outbox.push(...S.rejected); S.rejected = []; saveOutbox(); flush(); return;
     case "adminoff": adminOff("관리자 모드를 껐습니다"); return;
     case "visopen": openVis(); return;
+    case "zoneprint": printZones(); return;
     case "visclose": closeVis(); return;
     case "vissave": saveVis(); return;
   }
@@ -759,6 +792,7 @@ document.addEventListener("input", ev => {
   if (ev.target.id === "q") { S.q = ev.target.value; const pos = ev.target.selectionStart; renderView(); const q = $("q"); q.focus(); q.setSelectionRange(pos, pos) }
   if (ev.target.id === "nsSite") S.nsSite = ev.target.value;
   if (ev.target.id === "visq" && vis) { vis.q = ev.target.value; drawVisList() }
+  if (ev.target.id === "zone" && sheet) sheet.zone = ev.target.value;
   if (ev.target.id === "note" && sheet) { sheet.note = ev.target.value; document.querySelectorAll("[data-note]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.note === sheet.note.trim()))) }
 });
 document.addEventListener("keydown", ev => {

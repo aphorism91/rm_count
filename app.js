@@ -457,6 +457,28 @@ function addEntry(data) {
   enqueue({ op: "add", entry });
   toast(`저장: ${locName(entry.loc)} ${fmtInt(entry.qty)}本`);
 }
+/* 구역별 실사표 인쇄 (print.js): 장소·구역마다 품목별로 입력식과 합계를 모은다. 같은 품목도 구역이 다르면 따로 */
+function printZones() {
+  if (typeof window.openZonePrint !== "function") { toast("인쇄 화면을 불러오지 못했습니다. 새로고침 후 다시 눌러 주세요."); return }
+  const groups = new Map();  // "장소|구역" → Map(품목키 → {it, label, exprs, qty, by})
+  for (const e of active()) {
+    const gk = e.loc + "|" + (e.zone || "");
+    if (!groups.has(gk)) groups.set(gk, new Map());
+    const it = entryItem(e);
+    const ik = it ? "r" + it.r : "c" + (e.custom?.name || "") + "|" + (e.custom?.len || "");
+    const g = groups.get(gk), x = g.get(ik) || { it, e, exprs: [], qty: 0, by: new Set() };
+    x.exprs.push(e.expr); x.qty += e.qty; x.by.add(whoName(e.by)); g.set(ik, x);
+  }
+  const order = l => LOCS.findIndex(x => x.key === l);
+  const sections = [...groups.entries()].map(([gk, g]) => {
+    const [loc, zone] = gk.split("|");
+    const rows = [...g.values()].sort((a, b) => (a.it?.r ?? 1e9) - (b.it?.r ?? 1e9)).map(x => x.it
+      ? [grpLabel(x.it.grp), `${x.it.spec}${x.it.len ?? ""}`, x.exprs.join(" + "), fmtInt(x.qty), [...x.by].join(", ")]
+      : ["[추가품목]", `${x.e.custom?.name || ""}${x.e.custom?.len ? " × " + x.e.custom.len : ""}`, x.exprs.join(" + "), fmtInt(x.qty), [...x.by].join(", ")]);
+    return { loc, locName: locName(loc), locOrder: order(loc), zone, rows, total: `합계 ${fmtInt([...g.values()].reduce((s, x) => s + x.qty, 0))}本` };
+  });
+  window.openZonePrint({ title: "진천2 원자재 실사", month: monthLabel(S.month), headers: ["품목군", "규격·길이", "입력", "수량(本)", "입력자"], numCols: [3], sections });
+}
 /* 입력마다 구역(TAG NO.)을 받는다 → 엑셀의 장소별 TAG NO. 칸 */
 function editEntry(e, expr, qty, memo, zone) {
   enqueue({ op: "edit", id: e.id, expr, qty, memo, zone, by: S.me, at: new Date().toISOString() });
@@ -991,6 +1013,11 @@ function renderSum() {
       <tfoot><tr><td>계</td><td></td><td class="num">${tot.n}</td><td class="num">${touched}</td><td class="num">${fmtInt(tot.qty)}</td><td class="num">${fmt(tot.wt)}</td><td>${nLocked}/${LOCS.length} 잠김</td></tr></tfoot>
     </table></div>
     <div class="card">
+      <h2>구역별 실사표 인쇄</h2>
+      <p>장소 → 구역별로 입력값을 표로 뽑습니다(같은 품목도 구역이 다르면 따로). 반기 회계법인 실사 때 꼬리표 대신 대조용으로 씁니다. PC에서 열면 깔끔하게 인쇄되고 PDF로도 저장됩니다.</p>
+      <button class="btn" id="zonePrintBtn">구역별 실사표 열기</button>
+    </div>
+    <div class="card">
       <h2>PC 엑셀에 반영하기</h2>
       <p>입력은 구글 시트에 바로 저장됩니다. 조사가 끝나면 PC의 Claude에게 <b>"${Number(S.month.split("-")[1])}월 재고조사 반영해줘"</b>라고 하면 그달 원자재집계 파일의 장소별 수량 칸에 계산식 그대로(예: =400*7+334) 넣은 새 파일을 만듭니다.</p>
       <p>품목 목록: ${esc(monthLabel(S.cat.month))} 집계표 기준${S.cat.month !== S.month ? " (그달 집계표가 아직 없어 이전 달 목록을 씁니다)" : ""}.</p>
@@ -1232,6 +1259,7 @@ document.addEventListener("click", ev => {
   }
   if (t.dataset.act === "grpclose") { closeGrp(); return }
   if (t.dataset.gopt !== undefined) { S.grp = t.dataset.gopt; closeGrp(); setGrpBtn(); renderItems(); window.scrollTo({ top: 0 }); return }
+  if (t.id === "zonePrintBtn") { printZones(); return }
   if (t.id === "bigBtn" || t.id === "bigBtn2") { S.big = !S.big; store.set("rm-big", S.big); applyBig(); if (S.tab === "all") renderTab(); toast(S.big ? "글자를 크게 했습니다" : "글자를 보통으로 했습니다"); return }
   if (t.dataset.loc) { S.loc = t.dataset.loc; store.set("rm-loc", S.loc); renderLocBar(); renderTab(); return }
   if (t.classList.contains("tab")) { S.tab = t.id.slice(4); renderLocBar(); renderTab(); return }
