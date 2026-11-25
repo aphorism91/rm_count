@@ -457,8 +457,7 @@ function addEntry(data) {
   enqueue({ op: "add", entry });
   toast(`저장: ${locName(entry.loc)} ${fmtInt(entry.qty)}本`);
 }
-/* 반기 조사(6월말·12월말): 입력마다 구역(TAG NO.)을 받는다 → 엑셀의 장소별 TAG NO. 칸 */
-const isHalf = () => /-(06|12)$/.test(S.month || "");
+/* 입력마다 구역(TAG NO.)을 받는다 → 엑셀의 장소별 TAG NO. 칸 */
 function editEntry(e, expr, qty, memo, zone) {
   enqueue({ op: "edit", id: e.id, expr, qty, memo, zone, by: S.me, at: new Date().toISOString() });
   toast("수정했습니다 (이전 값은 내역에 남습니다)");
@@ -929,7 +928,7 @@ function drawLog(target, q, showDel, loc, emptyMsg) {
   const list = S.entries
     .filter(e => showDel || !e.del)
     .filter(e => !loc || e.loc === loc)
-    .filter(e => !w || `${entryLabel(e)} ${e.memo || ""} ${whoName(e.by)} ${e.expr}`.toLowerCase().includes(w))
+    .filter(e => !w || `${entryLabel(e)} ${e.memo || ""} ${e.zone ? "구역" + e.zone + " " + e.zone : ""} ${whoName(e.by)} ${e.expr}`.toLowerCase().includes(w))
     .sort((a, b) => String(b.ts || "").localeCompare(String(a.ts || "")));
   if (!S.loaded) { $(target).innerHTML = `<div class="empty">입력 내역을 불러오는 중입니다.</div>`; return }
   if (!list.length) { $(target).innerHTML = `<div class="empty">${w ? "검색에 맞는 입력이 없습니다." : emptyMsg}</div>`; return }
@@ -1120,8 +1119,7 @@ function drawSheet() {
         <div class="expr" id="dexpr">${exprHtml()}</div>
         <div class="res" id="dres">${resHtml()}</div>
       </div>
-      ${isHalf() ? `<div class="zonebox"><label for="zone">구역<small>TAG NO. · 반기 조사 필수</small></label><input id="zone" placeholder="예: 102" value="${esc(sheet.zone ?? "")}" maxlength="30" autocomplete="off"></div>` : ""}
-      <div class="memo"><input id="memo" placeholder="메모 (선택: 섹터 1-11, 랙 위치 등)" value="${esc(sheet.memo)}"></div>
+      <div class="zonebox"><label for="zone">구역<small>TAG NO. · 필수</small></label><input id="zone" placeholder="예: 102" value="${esc(sheet.zone ?? "")}" maxlength="30" autocomplete="off"></div>
       <div class="keys">
         ${["7", "8", "9"].map(k => `<button class="k" data-k="${k}">${k}</button>`).join("")}<button class="k fn" data-k="back" aria-label="한 글자 지우기">⌫</button>
         ${["4", "5", "6"].map(k => `<button class="k" data-k="${k}">${k}</button>`).join("")}<button class="k op" data-k="×">×</button>
@@ -1149,11 +1147,13 @@ function saveSheet() {
   if (typeof val !== "number" || isNaN(val)) return;
   // 같은 값을 방금 저장했으면 한 번 경고하고, 한 번 더 누르면 저장한다
   if (!sheet.dup) { const d = findDup(val); if (d) { sheet.dup = d; updateDisplay(); return } }
-  const memo = ($("memo")?.value || "").trim();
+  // 메모 칸은 없앴다(2026-11-25). 예전 기록을 고칠 때는 있던 메모를 그대로 둔다
+  const memo = sheet.editing?.memo || "";
   // 반기(6·12월) 조사는 구역(TAG NO.)을 꼭 넣는다. 다음 입력에도 같은 구역이 미리 채워진다(장소별로 이 폰에 기억)
-  const zone = isHalf() ? ($("zone")?.value || "").trim().slice(0, 30) : (sheet.editing?.zone || "");
-  if (isHalf() && !zone) { toast("반기 조사는 구역(TAG NO.)을 넣어야 저장됩니다"); $("zone")?.focus(); return }
-  if (isHalf()) store.set("rm-zone-" + sheet.loc, zone);
+  // 구역(TAG NO.)은 매달 꼭 넣는다 (2026-11-25 사용자 요청, 처음엔 반기만이었음)
+  const zone = ($("zone")?.value || "").trim().slice(0, 30);
+  if (!zone) { toast("구역(TAG NO.)을 넣어야 저장됩니다"); $("zone")?.focus(); return }
+  store.set("rm-zone-" + sheet.loc, zone);
   const expr = sheet.expr;
   if (sheet.editing) {
     const e = sheet.editing;
